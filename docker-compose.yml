@@ -1,12 +1,12 @@
-﻿version: "3.8"
 services:
   docling:
     build: .
     container_name: docling-service
     ports:
       - "8080:8080"
-    env_file:
-      - .env
+    environment:
+      DOCLING_API_KEY: "${DOCLING_API_KEY}"
+      PORT: "8080"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8080/healthz"]
