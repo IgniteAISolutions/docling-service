@@ -2,9 +2,6 @@ fastapi==0.115.0
 uvicorn[standard]==0.30.6
 pydantic==2.9.2
 httpx==0.27.2
-docling==1.0.0
 python-multipart==0.0.9
-
-# Optional OCR variants and helpers
-rapidocr-onnxruntime==1.3.21    # if you want RapidOCR fallback
 pillow==10.4.0
+docling @ git+https://github.com/IgniteAISolutions/docling-PDF.git@main
