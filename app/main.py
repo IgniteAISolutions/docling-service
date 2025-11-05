@@ -1,163 +1,103 @@
-import os
-import asyncio
-from typing import Optional
-from fastapi import FastAPI, UploadFile, File, Header, HTTPException
-from docling.document_converter import DocumentConverter, ConversionResult
-from app.models import ExtractRequest, ExtractResponse, ProductFields
-from app.batching import make_ranges
-from app.utils import fetch_to_tmp
-
-API_KEY = os.getenv("DOCLING_API_KEY", "")
-ALLOWED_CALLERS = os.getenv("ALLOWLIST_CIDRS", "")  # optional, enforce at proxy or firewall
-
-app = FastAPI(title="Docling Service", version="1.0.0")
-
-def check_key(x_api_key: Optional[str]):
-    if not API_KEY:
-        return
-    if x_api_key != API_KEY:
-        raise HTTPException(status_code=401, detail="Invalid API key")
-
-@app.get("/healthz")
-async def healthz():
-    return {"status": "ok"}
-
-@app.post("/convert", response_model=ExtractResponse)
-async def convert_body(
-    req: ExtractRequest,
-    x_api_key: Optional[str] = Header(default=None, convert_underscores=False),
-):
-    check_key(x_api_key)
-
-    if not req.file_url:
-        raise HTTPException(status_code=400, detail="file_url is required")
-
-    tmp_path = await fetch_to_tmp(req.file_url)
-
-    try:
-        converter = DocumentConverter()
-
-        # Single-pass convert if small or batch disabled
-        if not req.page_end:
-            result: ConversionResult = converter.convert(tmp_path)
-            md = result.document.export_to_markdown() if req.return_markdown else None
-            jj = result.document.export_to_dict() if req.return_json else None
-
-            inferred = infer_product_fields(jj, md)
-            return ExtractResponse(
-                pages_processed=len(result.document.pages),
-                markdown=md,
-                doc_json=jj,
-                inferred=inferred,
-                notes=["single pass"],
-            )
-
-        # Batch path
-        page_ranges = make_ranges(req.page_start, req.page_end, req.batch_size)
-        markdown_parts = []
-        merged_json = {"pages": []}
-        total_pages = 0
-        for a, b in page_ranges:
-            # Per-batch timeout guard
-            async def run_batch():
-                sub = converter.convert({"path": tmp_path, "page_range": [a, b]})
-                md = sub.document.export_to_markdown() if req.return_markdown else None
-                jj = sub.document.export_to_dict() if req.return_json else None
-                return md, jj, len(sub.document.pages)
-
-            md, jj, count = await asyncio.wait_for(
-                run_batch(), timeout=req.per_batch_timeout_sec
-            )
-
-            total_pages += count
-            if md:
-                markdown_parts.append(md)
-            if jj and "pages" in jj:
-                merged_json["pages"].extend(jj["pages"])
-
-        md_all = "\n\n".join(markdown_parts) if markdown_parts else None
-        inferred = infer_product_fields(merged_json if merged_json["pages"] else None, md_all)
-        return ExtractResponse(
-            pages_processed=total_pages,
-            markdown=md_all,
-            doc_json=merged_json if merged_json["pages"] else None,
-            inferred=inferred,
-            notes=[f"batched into {len(page_ranges)} ranges"],
-        )
-    finally:
-        try:
-            os.remove(tmp_path)
-        except Exception:
-            pass
+from typing import Any, Dict, List, Optional
+import json
+from app.models import ProductFields
 
 def infer_product_fields(doc_json: Optional[dict], markdown: Optional[str]) -> Optional[ProductFields]:
     """
-    Lightweight rule-based pass you can enhance later.
-    - Prefer JSON blocks with headings like 'Features' or 'Technical Specifications'
-    - Fallback to regex on Markdown
+    Robust extractor that never throws.
+    Accepts doc_json pages in any shape (dict, list, str).
+    Falls back to markdown, then a crude summary slice.
     """
-    if not doc_json and not markdown:
+    if doc_json is None and not markdown:
         return None
 
-    import re
+    # Normalise doc_json into a dict if possible
+    if isinstance(doc_json, dict):
+        jj: Dict[str, Any] = doc_json
+    elif isinstance(doc_json, str):
+        try:
+            jj = json.loads(doc_json)
+        except Exception:
+            jj = {}
+    else:
+        jj = {}
 
-    brand = None
-    ptype = None
-    sku = None
-    desc = None
-    features = []
-    tech_specs = []
+    pages = jj.get("pages", [])
+    text_chunks: List[str] = []
 
-    text_blob = ""
-    if markdown:
-        text_blob += markdown + "\n"
-    if doc_json:
-        # Concatenate text from blocks
-        for p in doc_json.get("pages", []):
-            for b in p.get("blocks", []):
+    # Prefer markdown if present
+    if isinstance(markdown, str) and markdown.strip():
+        text_chunks.append(markdown)
+
+    # Extract text from json pages
+    for p in pages:
+        # Case 1: page is dict
+        if isinstance(p, dict):
+            # blocks may hold text
+            blocks = p.get("blocks")
+            if isinstance(blocks, list):
+                for b in blocks:
+                    if isinstance(b, dict):
+                        t = b.get("text")
+                        if isinstance(t, str):
+                            text_chunks.append(t)
+                    elif isinstance(b, str):
+                        text_chunks.append(b)
+
+            # Some formats put text directly at page level
+            page_text = p.get("text")
+            if isinstance(page_text, str):
+                text_chunks.append(page_text)
+
+        # Case 2: page is list
+        elif isinstance(p, list):
+            for b in p:
                 if isinstance(b, dict):
-                    txt = b.get("text") or ""
-                    text_blob += txt + "\n"
+                    t = b.get("text")
+                    if isinstance(t, str):
+                        text_chunks.append(t)
+                elif isinstance(b, str):
+                    text_chunks.append(b)
 
-    # Very simple heuristics you can refine
-    sku_match = re.search(r"\b(SKU|Code|Product Code)\s*[:\-]\s*([A-Za-z0-9\-\._]+)", text_blob, re.IGNORECASE)
-    if sku_match:
-        sku = sku_match.group(2).strip()
+        # Case 3: page is plain string
+        elif isinstance(p, str):
+            text_chunks.append(p)
 
-    brand_match = re.search(r"\bBrand\s*[:\-]\s*([A-Za-z0-9 &\.\-]+)", text_blob, re.IGNORECASE)
-    if brand_match:
-        brand = brand_match.group(1).strip()
+    # Fallback: entire text blob field
+    if not text_chunks and isinstance(jj.get("text"), str):
+        text_chunks.append(jj["text"])
 
-    # Product type by headings like "Product Type: X"
-    ptype_match = re.search(r"\b(Product\s*Type)\s*[:\-]\s*([A-Za-z0-9 &\.\-]+)", text_blob, re.IGNORECASE)
-    if ptype_match:
-        ptype = ptype_match.group(2).strip()
+    blob = "\n".join(t for t in text_chunks if isinstance(t, str))
 
-    # Description - take first paragraph under "Description"
-    desc_match = re.search(r"Description\s*[:\-]\s*(.+?)(?:\n\n|\Z)", text_blob, re.IGNORECASE | re.DOTALL)
-    if desc_match:
-        desc = desc_match.group(1).strip()
+    # If upstream inference exists, respect it
+    inferred_up = jj.get("inferred") if isinstance(jj.get("inferred"), dict) else None
 
-    # Features - bullet points under Features
-    feats_section = re.search(r"Features\s*[:\-]?\s*(.+?)(?:\n[A-Z][^\n]{0,40}\n|\Z)", text_blob, re.IGNORECASE | re.DOTALL)
-    if feats_section:
-        for line in feats_section.group(1).splitlines():
-            if line.strip().startswith(("-", "•", "*")):
-                features.append(line.strip().lstrip("-•* ").strip())
+    brand = inferred_up.get("brand_name") if inferred_up else None
+    if not brand and inferred_up:
+        brand = inferred_up.get("brand")
 
-    # Tech specs - similar
-    specs_section = re.search(r"(Tech(nical)?\s*Spec(ifications)?|Specifications)\s*[:\-]?\s*(.+?)(?:\n[A-Z][^\n]{0,40}\n|\Z)",
-                              text_blob, re.IGNORECASE | re.DOTALL)
-    if specs_section:
-        for line in specs_section.group(0).splitlines():
-            if ":" in line and len(line) < 120:
-                tech_specs.append(line.strip())
+    sku = inferred_up.get("sku_code") if inferred_up else None
+    if not sku and inferred_up:
+        sku = inferred_up.get("sku") or inferred_up.get("SKU")
+
+    product_type = inferred_up.get("product_type") if inferred_up else None
+
+    description = inferred_up.get("description") if inferred_up else None
+    if not description and inferred_up:
+        description = inferred_up.get("summary")
+
+    features = inferred_up.get("features") if inferred_up and isinstance(inferred_up.get("features"), list) else None
+    tech_specs = inferred_up.get("tech_specifications") if inferred_up and isinstance(inferred_up.get("tech_specifications"), list) else None
+
+    # If no description at all, fallback to first 500 chars of blob
+    if not description and blob:
+        description = blob.strip()[:500]
 
     return ProductFields(
-        brand_name=brand,
-        product_type=ptype,
-        sku_code=sku,
-        description=desc,
+        brand_name=brand or None,
+        product_type=product_type or None,
+        sku_code=sku or None,
+        description=description or None,
         features=features or None,
         tech_specifications=tech_specs or None,
     )
