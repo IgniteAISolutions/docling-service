@@ -31,8 +31,11 @@ async def healthz():
 @app.post("/convert", response_model=ExtractResponse)
 async def convert_body(
     req: ExtractRequest,
-    x_api_key: Optional[str] = Header(default=None, convert_underscores=False),
+    # Accept both dashed and underscored header names to survive proxies that drop underscores
+    x_api_key_dash: Optional[str] = Header(default=None, alias="x-api-key"),
+    x_api_key_under: Optional[str] = Header(default=None, alias="x_api_key", convert_underscores=False),
 ):
+    x_api_key = x_api_key_dash or x_api_key_under
     check_key(x_api_key)
 
     if not req.file_url:
