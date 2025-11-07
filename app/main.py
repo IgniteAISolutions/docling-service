@@ -25,10 +25,21 @@ def get_converter() -> DocumentConverter:
     """Singleton pattern - reuse the same converter instance"""
     global _converter
     if _converter is None:
-        print("Initializing DocumentConverter (one-time setup)...")
+        print("🔄 Initializing DocumentConverter (one-time setup)...")
         _converter = DocumentConverter()
-        print("DocumentConverter ready!")
+        print("✅ DocumentConverter ready!")
     return _converter
+
+
+# ============================================
+# PRE-WARM MODELS ON STARTUP (ADD THIS HERE)
+# ============================================
+@app.on_event("startup")
+async def startup_event():
+    """Pre-load models on container startup"""
+    print("🚀 Pre-warming Docling models...")
+    get_converter()
+    print("🎉 Models loaded and ready to serve requests!")
 
 
 def check_key(x_api_key: Optional[str]):
@@ -56,7 +67,7 @@ async def convert_body(
     tmp_path = await fetch_to_tmp(req.file_url)
 
     try:
-        # Use the singleton converter
+        # Use the singleton converter (already loaded at startup!)
         converter = get_converter()
 
         # Single-pass if no page_end provided
@@ -86,7 +97,6 @@ async def convert_body(
                 md_b = sub.document.export_to_markdown() if req.return_markdown else None
                 jj_b = sub.document.export_to_dict() if req.return_json else None
                 
-                # Filter to only requested pages if needed
                 if jj_b and isinstance(jj_b, dict) and "pages" in jj_b:
                     all_pages = jj_b.get("pages", [])
                     if isinstance(all_pages, list):
@@ -126,11 +136,8 @@ async def convert_body(
             pass
 
 
-# [Keep your existing infer_product_fields function exactly as is]
 def infer_product_fields(doc_json: Optional[dict], markdown: Optional[str]) -> Optional[ProductFields]:
-    """
-    Robust extractor that never throws.
-    """
+    """Robust extractor that never throws."""
     if doc_json is None and not markdown:
         return None
 
