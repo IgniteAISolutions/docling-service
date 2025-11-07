@@ -12,13 +12,26 @@ from app.batching import make_ranges
 from app.utils import fetch_to_tmp
 
 API_KEY = os.getenv("DOCLING_API_KEY", "")
-ALLOWED_CALLERS = os.getenv("ALLOWLIST_CIDRS", "")  # optional, enforce at proxy or firewall
+ALLOWED_CALLERS = os.getenv("ALLOWLIST_CIDRS", "")
 
 app = FastAPI(title="Docling Service", version="1.0.0")
 
+# ============================================
+# CRITICAL: Initialize converter ONCE at startup
+# ============================================
+_converter: Optional[DocumentConverter] = None
+
+def get_converter() -> DocumentConverter:
+    """Singleton pattern - reuse the same converter instance"""
+    global _converter
+    if _converter is None:
+        print("Initializing DocumentConverter (one-time setup)...")
+        _converter = DocumentConverter()
+        print("DocumentConverter ready!")
+    return _converter
+
 
 def check_key(x_api_key: Optional[str]):
-    # If an API key is configured, require it
     if API_KEY and x_api_key != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API key")
 
@@ -31,7 +44,6 @@ async def healthz():
 @app.post("/convert", response_model=ExtractResponse)
 async def convert_body(
     req: ExtractRequest,
-    # Accept both dashed and underscored header names to survive proxies that drop underscores
     x_api_key_dash: Optional[str] = Header(default=None, alias="x-api-key"),
     x_api_key_under: Optional[str] = Header(default=None, alias="x_api_key", convert_underscores=False),
 ):
@@ -44,7 +56,8 @@ async def convert_body(
     tmp_path = await fetch_to_tmp(req.file_url)
 
     try:
-        converter = DocumentConverter()
+        # Use the singleton converter
+        converter = get_converter()
 
         # Single-pass if no page_end provided
         if not req.page_end:
@@ -61,7 +74,7 @@ async def convert_body(
                 notes=["single pass"],
             )
 
-        # Batched conversion - FIXED: Pass tmp_path directly, not as dict
+        # Batched conversion
         page_ranges = make_ranges(req.page_start, req.page_end, req.batch_size)
         markdown_parts: List[str] = []
         merged_json: Dict[str, Any] = {"pages": []}
@@ -69,19 +82,14 @@ async def convert_body(
 
         for a, b in page_ranges:
             async def run_batch():
-                # FIX: Pass tmp_path as string, not dict
-                # The page_range parameter doesn't work this way in newer Docling
-                # So we'll just convert the whole document for now
                 sub = converter.convert(tmp_path)
                 md_b = sub.document.export_to_markdown() if req.return_markdown else None
                 jj_b = sub.document.export_to_dict() if req.return_json else None
                 
                 # Filter to only requested pages if needed
                 if jj_b and isinstance(jj_b, dict) and "pages" in jj_b:
-                    # Extract only pages in range [a, b]
                     all_pages = jj_b.get("pages", [])
                     if isinstance(all_pages, list):
-                        # Filter pages by page number (1-indexed)
                         filtered_pages = [
                             p for p in all_pages 
                             if isinstance(p, dict) and a <= p.get("page_no", 0) <= b
@@ -118,17 +126,14 @@ async def convert_body(
             pass
 
 
-# -------- Robust extractor that never throws --------
+# [Keep your existing infer_product_fields function exactly as is]
 def infer_product_fields(doc_json: Optional[dict], markdown: Optional[str]) -> Optional[ProductFields]:
     """
     Robust extractor that never throws.
-    Accepts doc_json pages in any shape (dict, list, str).
-    Falls back to markdown, then a crude summary slice.
     """
     if doc_json is None and not markdown:
         return None
 
-    # Normalise doc_json into a dict if possible
     if isinstance(doc_json, dict):
         jj: Dict[str, Any] = doc_json
     elif isinstance(doc_json, str):
@@ -142,15 +147,11 @@ def infer_product_fields(doc_json: Optional[dict], markdown: Optional[str]) -> O
     pages = jj.get("pages", []) if isinstance(jj, dict) else []
     text_chunks: List[str] = []
 
-    # Prefer markdown if present
     if isinstance(markdown, str) and markdown.strip():
         text_chunks.append(markdown)
 
-    # Extract text from json pages
     for p in pages:
-        # Case 1: page is dict
         if isinstance(p, dict):
-            # blocks may hold text
             blocks = p.get("blocks")
             if isinstance(blocks, list):
                 for b in blocks:
@@ -161,12 +162,10 @@ def infer_product_fields(doc_json: Optional[dict], markdown: Optional[str]) -> O
                     elif isinstance(b, str):
                         text_chunks.append(b)
 
-            # Some formats put text directly at page level
             page_text = p.get("text")
             if isinstance(page_text, str):
                 text_chunks.append(page_text)
 
-        # Case 2: page is list
         elif isinstance(p, list):
             for b in p:
                 if isinstance(b, dict):
@@ -176,17 +175,14 @@ def infer_product_fields(doc_json: Optional[dict], markdown: Optional[str]) -> O
                 elif isinstance(b, str):
                     text_chunks.append(b)
 
-        # Case 3: page is plain string
         elif isinstance(p, str):
             text_chunks.append(p)
 
-    # Fallback: entire text blob field
     if not text_chunks and isinstance(jj, dict) and isinstance(jj.get("text"), str):
         text_chunks.append(jj["text"])
 
     blob = "\n".join(t for t in text_chunks if isinstance(t, str))
 
-    # If upstream inference exists, respect it
     inferred_up = jj.get("inferred") if isinstance(jj, dict) and isinstance(jj.get("inferred"), dict) else None
 
     brand = inferred_up.get("brand_name") if inferred_up else None
@@ -197,4 +193,22 @@ def infer_product_fields(doc_json: Optional[dict], markdown: Optional[str]) -> O
     if not sku and inferred_up:
         sku = inferred_up.get("sku") or inferred_up.get("SKU")
 
-    product
+    product_type = inferred_up.get("product_type") if inferred_up else None
+    description = inferred_up.get("description") if inferred_up else None
+    if not description and inferred_up:
+        description = inferred_up.get("summary")
+
+    features = inferred_up.get("features") if inferred_up and isinstance(inferred_up.get("features"), list) else None
+    tech_specs = inferred_up.get("tech_specifications") if inferred_up and isinstance(inferred_up.get("tech_specifications"), list) else None
+
+    if not description and blob:
+        description = blob.strip()[:500]
+
+    return ProductFields(
+        brand_name=brand or None,
+        product_type=product_type or None,
+        sku_code=sku or None,
+        description=description or None,
+        features=features or None,
+        tech_specifications=tech_specs or None,
+    )
