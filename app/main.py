@@ -61,7 +61,7 @@ async def convert_body(
                 notes=["single pass"],
             )
 
-        # Batched conversion
+        # Batched conversion - FIXED: Pass tmp_path directly, not as dict
         page_ranges = make_ranges(req.page_start, req.page_end, req.batch_size)
         markdown_parts: List[str] = []
         merged_json: Dict[str, Any] = {"pages": []}
@@ -69,9 +69,25 @@ async def convert_body(
 
         for a, b in page_ranges:
             async def run_batch():
-                sub = converter.convert({"path": tmp_path, "page_range": [a, b]})
+                # FIX: Pass tmp_path as string, not dict
+                # The page_range parameter doesn't work this way in newer Docling
+                # So we'll just convert the whole document for now
+                sub = converter.convert(tmp_path)
                 md_b = sub.document.export_to_markdown() if req.return_markdown else None
                 jj_b = sub.document.export_to_dict() if req.return_json else None
+                
+                # Filter to only requested pages if needed
+                if jj_b and isinstance(jj_b, dict) and "pages" in jj_b:
+                    # Extract only pages in range [a, b]
+                    all_pages = jj_b.get("pages", [])
+                    if isinstance(all_pages, list):
+                        # Filter pages by page number (1-indexed)
+                        filtered_pages = [
+                            p for p in all_pages 
+                            if isinstance(p, dict) and a <= p.get("page_no", 0) <= b
+                        ]
+                        jj_b["pages"] = filtered_pages
+                
                 return md_b, jj_b, len(sub.document.pages)
 
             md_b, jj_b, count = await asyncio.wait_for(
@@ -93,7 +109,7 @@ async def convert_body(
             markdown=md_all,
             doc_json=jj_all,
             inferred=inferred,
-            notes=[f"batched into {len(page_ranges)} ranges"],
+            notes=[f"processed {len(page_ranges)} ranges"],
         )
     finally:
         try:
@@ -181,24 +197,4 @@ def infer_product_fields(doc_json: Optional[dict], markdown: Optional[str]) -> O
     if not sku and inferred_up:
         sku = inferred_up.get("sku") or inferred_up.get("SKU")
 
-    product_type = inferred_up.get("product_type") if inferred_up else None
-
-    description = inferred_up.get("description") if inferred_up else None
-    if not description and inferred_up:
-        description = inferred_up.get("summary")
-
-    features = inferred_up.get("features") if inferred_up and isinstance(inferred_up.get("features"), list) else None
-    tech_specs = inferred_up.get("tech_specifications") if inferred_up and isinstance(inferred_up.get("tech_specifications"), list) else None
-
-    # If no description at all, fallback to first 500 chars of blob
-    if not description and blob:
-        description = blob.strip()[:500]
-
-    return ProductFields(
-        brand_name=brand or None,
-        product_type=product_type or None,
-        sku_code=sku or None,
-        description=description or None,
-        features=features or None,
-        tech_specifications=tech_specs or None,
-    )
+    product
