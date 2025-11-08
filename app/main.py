@@ -5,6 +5,7 @@ import asyncio
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, Header, HTTPException
+from fastapi.middleware.cors import CORSMiddleware  # ← ADD THIS LINE
 from docling.document_converter import DocumentConverter, ConversionResult
 
 from app.models import ExtractRequest, ExtractResponse, ProductFields
@@ -15,6 +16,22 @@ API_KEY = os.getenv("DOCLING_API_KEY", "")
 ALLOWED_CALLERS = os.getenv("ALLOWLIST_CIDRS", "")
 
 app = FastAPI(title="Docling Service", version="1.0.0")
+
+# ============================================
+# ADD CORS MIDDLEWARE HERE
+# ============================================
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:5173",  # Vite default
+        "https://your-production-domain.com",  # Replace with your actual domain
+        # Add any other domains your React app runs on
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ============================================
 # CRITICAL: Initialize converter ONCE at startup
@@ -29,8 +46,6 @@ def get_converter() -> DocumentConverter:
         _converter = DocumentConverter()
         print("✅ DocumentConverter ready!")
     return _converter
-
-
 # ============================================
 # PRE-WARM MODELS ON STARTUP (ADD THIS HERE)
 # ============================================
