@@ -5,7 +5,7 @@ import asyncio
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, Header, HTTPException
-from fastapi.middleware.cors import CORSMiddleware  # ← ADD THIS LINE
+from fastapi.middleware.cors import CORSMiddleware
 from docling.document_converter import DocumentConverter, ConversionResult
 
 from app.models import ExtractRequest, ExtractResponse, ProductFields
@@ -13,51 +13,28 @@ from app.batching import make_ranges
 from app.utils import fetch_to_tmp
 
 API_KEY = os.getenv("DOCLING_API_KEY", "")
-ALLOWED_CALLERS = os.getenv("ALLOWLIST_CIDRS", "")
+ALLOWED_CALLERS = os.getenv("ALLOWLIST_CIDRS", "")  # optional, enforce at proxy or firewall
 
 app = FastAPI(title="Docling Service", version="1.0.0")
 
-# ============================================
-# ADD CORS MIDDLEWARE HERE
-# ============================================
+# ✅ ADD CORS MIDDLEWARE - This allows React to call Elestio directly
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",
-        "http://localhost:5173",  # Vite default
-        "https://your-production-domain.com",  # Replace with your actual domain
-        # Add any other domains your React app runs on
+        "http://localhost:3001", 
+        "https://*.vercel.app",
+        "https://*.netlify.app",
+        "*"  # Or be more specific with your production domain
     ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ============================================
-# CRITICAL: Initialize converter ONCE at startup
-# ============================================
-_converter: Optional[DocumentConverter] = None
-
-def get_converter() -> DocumentConverter:
-    """Singleton pattern - reuse the same converter instance"""
-    global _converter
-    if _converter is None:
-        print("🔄 Initializing DocumentConverter (one-time setup)...")
-        _converter = DocumentConverter()
-        print("✅ DocumentConverter ready!")
-    return _converter
-# ============================================
-# PRE-WARM MODELS ON STARTUP (ADD THIS HERE)
-# ============================================
-@app.on_event("startup")
-async def startup_event():
-    """Pre-load models on container startup"""
-    print("🚀 Pre-warming Docling models...")
-    get_converter()
-    print("🎉 Models loaded and ready to serve requests!")
-
 
 def check_key(x_api_key: Optional[str]):
+    # If an API key is configured, require it
     if API_KEY and x_api_key != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API key")
 
@@ -65,11 +42,10 @@ def check_key(x_api_key: Optional[str]):
 @app.get("/healthz")
 async def healthz():
     return {"status": "ok"}
-
-
 @app.post("/convert", response_model=ExtractResponse)
 async def convert_body(
     req: ExtractRequest,
+    # Accept both dashed and underscored header names to survive proxies that drop underscores
     x_api_key_dash: Optional[str] = Header(default=None, alias="x-api-key"),
     x_api_key_under: Optional[str] = Header(default=None, alias="x_api_key", convert_underscores=False),
 ):
@@ -82,8 +58,7 @@ async def convert_body(
     tmp_path = await fetch_to_tmp(req.file_url)
 
     try:
-        # Use the singleton converter (already loaded at startup!)
-        converter = get_converter()
+        converter = DocumentConverter()
 
         # Single-pass if no page_end provided
         if not req.page_end:
@@ -108,19 +83,9 @@ async def convert_body(
 
         for a, b in page_ranges:
             async def run_batch():
-                sub = converter.convert(tmp_path)
+                sub = converter.convert({"path": tmp_path, "page_range": [a, b]})
                 md_b = sub.document.export_to_markdown() if req.return_markdown else None
                 jj_b = sub.document.export_to_dict() if req.return_json else None
-                
-                if jj_b and isinstance(jj_b, dict) and "pages" in jj_b:
-                    all_pages = jj_b.get("pages", [])
-                    if isinstance(all_pages, list):
-                        filtered_pages = [
-                            p for p in all_pages 
-                            if isinstance(p, dict) and a <= p.get("page_no", 0) <= b
-                        ]
-                        jj_b["pages"] = filtered_pages
-                
                 return md_b, jj_b, len(sub.document.pages)
 
             md_b, jj_b, count = await asyncio.wait_for(
@@ -142,7 +107,7 @@ async def convert_body(
             markdown=md_all,
             doc_json=jj_all,
             inferred=inferred,
-            notes=[f"processed {len(page_ranges)} ranges"],
+            notes=[f"batched into {len(page_ranges)} ranges"],
         )
     finally:
         try:
@@ -151,11 +116,17 @@ async def convert_body(
             pass
 
 
+# -------- Robust extractor that never throws --------
 def infer_product_fields(doc_json: Optional[dict], markdown: Optional[str]) -> Optional[ProductFields]:
-    """Robust extractor that never throws."""
+    """
+    Robust extractor that never throws.
+    Accepts doc_json pages in any shape (dict, list, str).
+    Falls back to markdown, then a crude summary slice.
+    """
     if doc_json is None and not markdown:
         return None
 
+    # Normalise doc_json into a dict if possible
     if isinstance(doc_json, dict):
         jj: Dict[str, Any] = doc_json
     elif isinstance(doc_json, str):
@@ -169,11 +140,15 @@ def infer_product_fields(doc_json: Optional[dict], markdown: Optional[str]) -> O
     pages = jj.get("pages", []) if isinstance(jj, dict) else []
     text_chunks: List[str] = []
 
+    # Prefer markdown if present
     if isinstance(markdown, str) and markdown.strip():
         text_chunks.append(markdown)
 
+    # Extract text from json pages
     for p in pages:
+        # Case 1: page is dict
         if isinstance(p, dict):
+            # blocks may hold text
             blocks = p.get("blocks")
             if isinstance(blocks, list):
                 for b in blocks:
@@ -184,10 +159,12 @@ def infer_product_fields(doc_json: Optional[dict], markdown: Optional[str]) -> O
                     elif isinstance(b, str):
                         text_chunks.append(b)
 
+            # Some formats put text directly at page level
             page_text = p.get("text")
             if isinstance(page_text, str):
                 text_chunks.append(page_text)
 
+        # Case 2: page is list
         elif isinstance(p, list):
             for b in p:
                 if isinstance(b, dict):
@@ -197,14 +174,17 @@ def infer_product_fields(doc_json: Optional[dict], markdown: Optional[str]) -> O
                 elif isinstance(b, str):
                     text_chunks.append(b)
 
+        # Case 3: page is plain string
         elif isinstance(p, str):
             text_chunks.append(p)
 
+    # Fallback: entire text blob field
     if not text_chunks and isinstance(jj, dict) and isinstance(jj.get("text"), str):
         text_chunks.append(jj["text"])
 
     blob = "\n".join(t for t in text_chunks if isinstance(t, str))
 
+    # If upstream inference exists, respect it
     inferred_up = jj.get("inferred") if isinstance(jj, dict) and isinstance(jj.get("inferred"), dict) else None
 
     brand = inferred_up.get("brand_name") if inferred_up else None
@@ -216,6 +196,7 @@ def infer_product_fields(doc_json: Optional[dict], markdown: Optional[str]) -> O
         sku = inferred_up.get("sku") or inferred_up.get("SKU")
 
     product_type = inferred_up.get("product_type") if inferred_up else None
+
     description = inferred_up.get("description") if inferred_up else None
     if not description and inferred_up:
         description = inferred_up.get("summary")
@@ -223,6 +204,7 @@ def infer_product_fields(doc_json: Optional[dict], markdown: Optional[str]) -> O
     features = inferred_up.get("features") if inferred_up and isinstance(inferred_up.get("features"), list) else None
     tech_specs = inferred_up.get("tech_specifications") if inferred_up and isinstance(inferred_up.get("tech_specifications"), list) else None
 
+    # If no description at all, fallback to first 500 chars of blob
     if not description and blob:
         description = blob.strip()[:500]
 
