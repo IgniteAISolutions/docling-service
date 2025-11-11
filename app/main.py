@@ -1,5 +1,5 @@
-# app/main.py - IMPROVED VERSION
-# Better product extraction + Enhanced brand voice prompts
+# app/main.py - IMPROVED VERSION WITH VARIANT SKU EXTRACTION
+# Better product extraction + Enhanced brand voice prompts + Full variant SKU codes
 # Flow: React → Elestio → Supabase brand-voice → React
 
 import os
@@ -201,7 +201,7 @@ def infer_product_fields_improved(doc_json: Optional[dict], markdown: Optional[s
     IMPROVED: Extract product fields with better logic
     - Identifies actual product names (not markdown headers)
     - Extracts brand from logos/headers
-    - Finds all SKU codes and variants
+    - Finds all SKU codes and variants with full SKU codes
     - Extracts specs, prices, dimensions
     """
     if doc_json is None and not markdown:
@@ -284,19 +284,45 @@ def infer_product_fields_improved(doc_json: Optional[dict], markdown: Optional[s
             if match not in sku_codes:
                 sku_codes.append(match)
 
-    # STEP 5: Extract Variants/Colors (usually near SKU codes)
-    color_keywords = ["stainless steel", "black", "white", "brushed", "truffle", "nougat", "salt"]
+    # STEP 5: Extract Variants/Colors with FULL SKU codes (ENHANCED)
+    # Look for table rows with pattern: | Color Name | Code | SKU | ... |
     for line in lines:
-        line_lower = line.lower()
-        for color in color_keywords:
-            if color in line_lower and len(line) < 100:
-                # Extract the variant name
-                variant_match = re.search(r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+([A-Z]{3})\s+', line)
-                if variant_match:
-                    variant_name = variant_match.group(1)
-                    variant_code = variant_match.group(2)
-                    if variant_name not in [v.get("name") for v in variants]:
-                        variants.append({"name": variant_name, "code": variant_code})
+        # Match table format: | Brushed Stainless Steel | BSS | SES882BSS4GUK1 | ...
+        table_match = re.search(r'\|\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s*\|\s*([A-Z]{3})\s*\|\s*([A-Z0-9]{10,})\s*\|', line)
+        if table_match:
+            variant_name = table_match.group(1).strip()
+            variant_code = table_match.group(2).strip()
+            variant_sku = table_match.group(3).strip()
+            
+            # Avoid duplicates
+            if variant_name not in [v.get("name") for v in variants]:
+                variants.append({
+                    "name": variant_name,
+                    "code": variant_code,
+                    "sku": variant_sku  # Full SKU for this variant
+                })
+                print(f"[VARIANT] Extracted: {variant_name} ({variant_code}) - {variant_sku}")
+        
+        # Fallback: Also try non-table format for other PDFs
+        # Pattern: "Brushed Stainless Steel    BSS    SES882BSS4GUK1"
+        elif len(line) < 150:
+            line_lower = line.lower()
+            color_keywords = ["stainless steel", "black", "white", "brushed", "truffle", "nougat", "salt", "almond", "sea salt"]
+            for color in color_keywords:
+                if color in line_lower:
+                    variant_match = re.search(r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+([A-Z]{3})\s+([A-Z0-9]{10,})', line)
+                    if variant_match:
+                        variant_name = variant_match.group(1).strip()
+                        variant_code = variant_match.group(2).strip()
+                        variant_sku = variant_match.group(3).strip()
+                        if variant_name not in [v.get("name") for v in variants]:
+                            variants.append({
+                                "name": variant_name,
+                                "code": variant_code,
+                                "sku": variant_sku
+                            })
+                            print(f"[VARIANT] Extracted: {variant_name} ({variant_code}) - {variant_sku}")
+                    break
 
     # STEP 6: Extract Prices
     price_pattern = r'(GBP|EUR|USD|\$|£|€)\s*[£$€]?\s*(\d{1,5}(?:[.,]\d{2})?)'
