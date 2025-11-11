@@ -9,13 +9,13 @@ services:
       PORT: "8080"
     restart: unless-stopped
     # ADD GPU SUPPORT
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+  #  deploy:
+   #   resources:
+    #    reservations:
+     #     devices:
+      #      - driver: nvidia
+       #       count: 1
+        #      capabilities: [gpu]
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8080/healthz"]
       interval: 30s
