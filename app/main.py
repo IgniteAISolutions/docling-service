@@ -1,11 +1,12 @@
-# app/main.py - COMPLETE REPLACEMENT
-# Copy this ENTIRE file to replace your current main.py
+# app/main.py - IMPROVED VERSION
+# Better product extraction + Enhanced brand voice prompts
 # Flow: React → Elestio → Supabase brand-voice → React
 
 import os
 import json
 import asyncio
 import httpx
+import re
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, Header, HTTPException
@@ -103,30 +104,36 @@ async def convert_body(
             jj = merged_json if merged_json.get("pages") else None
             pages_processed = total_pages
 
-        # Infer product fields from extracted data
-        inferred = infer_product_fields(jj, md)
+        # IMPROVED: Extract product fields with better logic
+        inferred = infer_product_fields_improved(jj, md)
 
-        # Build product object
+        # Build product object with extracted raw content
         product = {
             "id": os.urandom(16).hex(),
-            "name": (inferred.get("product_type") or inferred.get("brand_name") or "Extracted Product") if inferred else "Extracted Product",
-            "brand": inferred.get("brand_name", "") if inferred else "",
-            "sku": inferred.get("sku_code", "") if inferred else "",
+            "name": inferred.get("product_name") or "Extracted Product",
+            "brand": inferred.get("brand_name", ""),
+            "sku": inferred.get("sku_code", ""),
             "category": category,
             "source": "docling",
+            "rawExtractedContent": md or inferred.get("description", ""),  # Pass full content to brand-voice
             "specifications": {
-                "product_type": inferred.get("product_type", "") if inferred else "",
+                "model": inferred.get("model_number", ""),
+                "variants": inferred.get("variants", []),
+                "prices": inferred.get("prices", {}),
+                "dimensions": inferred.get("dimensions", ""),
+                "weight": inferred.get("weight", ""),
+                "power": inferred.get("power", ""),
                 "pages_processed": pages_processed,
             },
-            "features": inferred.get("features", []) if inferred else [],
+            "features": inferred.get("features", []),
             "descriptions": {
-                "shortDescription": (inferred.get("description", "") or "")[:280] if inferred else "",
-                "metaDescription": (inferred.get("description", "") or "")[:160] if inferred else "",
-                "longDescription": md or (inferred.get("description", "") if inferred else ""),
+                "shortDescription": inferred.get("summary", ""),
+                "metaDescription": inferred.get("summary", "")[:160],
+                "longDescription": md or inferred.get("description", ""),
             }
         }
 
-        # Call Supabase brand-voice to enhance descriptions
+        # Call Supabase brand-voice with improved product data
         try:
             enhanced_products = await call_brand_voice([product], category)
             return {
@@ -156,7 +163,7 @@ async def convert_body(
 
 
 async def call_brand_voice(products: List[dict], category: str) -> List[dict]:
-    """Call Supabase generate-brand-voice edge function"""
+    """Call Supabase generate-brand-voice edge function with enhanced context"""
     brand_voice_url = f"{SUPABASE_URL}/functions/v1/generate-brand-voice"
     
     async with httpx.AsyncClient(timeout=120.0) as client:
@@ -167,7 +174,16 @@ async def call_brand_voice(products: List[dict], category: str) -> List[dict]:
                 "apikey": SUPABASE_ANON_KEY,
                 "Content-Type": "application/json",
             },
-            json={"products": products, "category": category}
+            json={
+                "products": products,
+                "category": category,
+                "extractionHints": {
+                    "useRawContent": True,  # Tell brand-voice to use rawExtractedContent
+                    "preserveProductName": True,  # Don't change the extracted product name
+                    "preserveBrand": True,  # Don't change the extracted brand
+                    "preserveSKU": True,  # Don't change the extracted SKU
+                }
+            }
         )
         
         if not response.is_success:
@@ -180,68 +196,176 @@ async def call_brand_voice(products: List[dict], category: str) -> List[dict]:
         return result.get("products", products)
 
 
-def infer_product_fields(doc_json: Optional[dict], markdown: Optional[str]) -> Optional[dict]:
-    """Extract product fields from document"""
+def infer_product_fields_improved(doc_json: Optional[dict], markdown: Optional[str]) -> Optional[dict]:
+    """
+    IMPROVED: Extract product fields with better logic
+    - Identifies actual product names (not markdown headers)
+    - Extracts brand from logos/headers
+    - Finds all SKU codes and variants
+    - Extracts specs, prices, dimensions
+    """
     if doc_json is None and not markdown:
         return None
 
-    # Normalize JSON
-    if isinstance(doc_json, dict):
-        jj = doc_json
-    elif isinstance(doc_json, str):
-        try:
-            jj = json.loads(doc_json)
-        except Exception:
-            jj = {}
-    else:
-        jj = {}
-
-    pages = jj.get("pages", []) if isinstance(jj, dict) else []
-    text_chunks: List[str] = []
-
+    # Get full text
+    all_text = ""
     if isinstance(markdown, str) and markdown.strip():
-        text_chunks.append(markdown)
-
-    # Extract text from pages
-    for p in pages:
-        if isinstance(p, dict):
-            blocks = p.get("blocks")
-            if isinstance(blocks, list):
-                for b in blocks:
-                    if isinstance(b, dict):
-                        t = b.get("text")
-                        if isinstance(t, str):
-                            text_chunks.append(t)
-                    elif isinstance(b, str):
-                        text_chunks.append(b)
-        elif isinstance(p, str):
-            text_chunks.append(p)
-
-    all_text = " ".join(text_chunks)[:2000] if text_chunks else ""
-
-    # Basic field extraction
-    product_type = None
-    brand_name = None
-    sku_code = None
-    description = all_text[:500] if all_text else None
+        all_text = markdown
+    
+    if not all_text:
+        return {
+            "product_name": None,
+            "brand_name": None,
+            "sku_code": None,
+            "description": None,
+            "features": [],
+        }
 
     lines = all_text.split("\n")
+    
+    # Initialize extraction results
+    product_name = None
+    brand_name = None
+    model_number = None
+    sku_codes = []
+    variants = []
+    prices = {}
+    features = []
+    dimensions = None
+    weight = None
+    power = None
+    summary = None
+
+    # STEP 1: Extract Brand (usually in header or logo alt text)
+    for i, line in enumerate(lines[:10]):
+        # Skip empty lines and markdown syntax
+        line_clean = line.strip().replace("#", "").strip()
+        if not line_clean or len(line_clean) < 2:
+            continue
+        
+        # Common brand patterns
+        if re.match(r'^[A-Z][a-z]+$', line_clean) or re.match(r'^[A-Z][a-z]+\s+[A-Z][a-z]+$', line_clean):
+            if not brand_name and len(line_clean) < 30:
+                brand_name = line_clean
+                break
+
+    # STEP 2: Extract Product Name (usually after brand, before "PRODUCT" or specs)
+    for i, line in enumerate(lines[:30]):
+        line_clean = line.strip().replace("#", "").strip()
+        line_lower = line_clean.lower()
+        
+        # Skip obvious non-product-name lines
+        if not line_clean or "product technical" in line_lower or "spec" in line_lower:
+            continue
+        if line_clean.startswith("•") or line_clean.startswith("-"):
+            continue
+        if re.match(r'^\d', line_clean):  # Starts with number
+            continue
+            
+        # Product names often contain "the", trademark symbols, or descriptive words
+        if any(indicator in line_lower for indicator in ["the ", "™", "®", "barista", "espresso", "machine", "coffee"]):
+            if not product_name and 5 < len(line_clean) < 100:
+                product_name = line_clean
+                break
+
+    # STEP 3: Extract Model Number (usually near product name or in SKU section)
+    model_pattern = r'\b[A-Z]{2,}[0-9]{2,}\b'  # e.g., SES882
     for line in lines[:50]:
+        matches = re.findall(model_pattern, line)
+        if matches and not model_number:
+            model_number = matches[0]
+            break
+
+    # STEP 4: Extract SKU Codes (usually in tables with patterns like SES882BSS4GUK1)
+    sku_pattern = r'\b[A-Z]{2,}[0-9]{3,}[A-Z0-9]{5,}\b'  # e.g., SES882BSS4GUK1
+    for line in lines:
+        matches = re.findall(sku_pattern, line)
+        for match in matches:
+            if match not in sku_codes:
+                sku_codes.append(match)
+
+    # STEP 5: Extract Variants/Colors (usually near SKU codes)
+    color_keywords = ["stainless steel", "black", "white", "brushed", "truffle", "nougat", "salt"]
+    for line in lines:
         line_lower = line.lower()
-        if any(kw in line_lower for kw in ["model", "product", "item"]):
-            if not product_type and len(line) < 100:
-                product_type = line.strip()
-        if any(kw in line_lower for kw in ["brand", "manufacturer"]):
-            if not brand_name and len(line) < 50:
-                brand_name = line.strip()
-        if any(kw in line_lower for kw in ["sku", "code", "ref"]):
-            if not sku_code and len(line) < 50:
-                sku_code = line.strip()
+        for color in color_keywords:
+            if color in line_lower and len(line) < 100:
+                # Extract the variant name
+                variant_match = re.search(r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+([A-Z]{3})\s+', line)
+                if variant_match:
+                    variant_name = variant_match.group(1)
+                    variant_code = variant_match.group(2)
+                    if variant_name not in [v.get("name") for v in variants]:
+                        variants.append({"name": variant_name, "code": variant_code})
+
+    # STEP 6: Extract Prices
+    price_pattern = r'(GBP|EUR|USD|\$|£|€)\s*[£$€]?\s*(\d{1,5}(?:[.,]\d{2})?)'
+    for line in lines[:50]:
+        matches = re.findall(price_pattern, line)
+        for currency, amount in matches:
+            amount_clean = amount.replace(",", "")
+            if currency not in prices:
+                prices[currency] = amount_clean
+
+    # STEP 7: Extract Dimensions
+    dimension_pattern = r'(\d{2,4}\s*x\s*\d{2,4}\s*x\s*\d{2,4})\s*mm'
+    for line in lines:
+        match = re.search(dimension_pattern, line)
+        if match and not dimensions:
+            dimensions = match.group(1) + " mm"
+            break
+
+    # STEP 8: Extract Weight
+    weight_pattern = r'(\d+\.?\d*)\s*kg'
+    for line in lines:
+        if "product weight" in line.lower():
+            match = re.search(weight_pattern, line)
+            if match:
+                weight = match.group(0)
+                break
+
+    # STEP 9: Extract Power
+    power_pattern = r'(\d{3,4})-?(\d{3,4})W'
+    for line in lines:
+        match = re.search(power_pattern, line)
+        if match and not power:
+            power = f"{match.group(1)}-{match.group(2)}W"
+            break
+
+    # STEP 10: Extract Features (lines starting with bullets or containing key feature words)
+    feature_keywords = ["preset", "setting", "cup", "extraction", "grind", "milk", "filter", "cleaning"]
+    for line in lines:
+        line_clean = line.strip()
+        if line_clean.startswith("•") or line_clean.startswith("-"):
+            feature_text = line_clean.lstrip("•-").strip()
+            if 10 < len(feature_text) < 200:
+                features.append(feature_text)
+        else:
+            for keyword in feature_keywords:
+                if keyword in line.lower() and 20 < len(line_clean) < 200:
+                    if line_clean not in features:
+                        features.append(line_clean)
+
+    # STEP 11: Generate summary (first meaningful sentence)
+    for line in lines[:50]:
+        line_clean = line.strip().replace("#", "").strip()
+        if 30 < len(line_clean) < 200 and not line_clean.startswith("•"):
+            if not any(skip in line_clean.lower() for skip in ["product", "technical", "spec", "dimension"]):
+                summary = line_clean
+                break
 
     return {
-        "product_type": product_type,
+        "product_name": product_name,
         "brand_name": brand_name,
-        "sku_code": sku_code,
-        "description": description,
-        "features": [],
+        "model_number": model_number,
+        "sku_code": sku_codes[0] if sku_codes else None,
+        "all_skus": sku_codes,
+        "variants": variants,
+        "prices": prices,
+        "dimensions": dimensions,
+        "weight": weight,
+        "power": power,
+        "features": features[:10],  # Limit to top 10 features
+        "summary": summary,
+        "description": all_text[:1000],  # First 1000 chars for context
     }
