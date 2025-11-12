@@ -2,7 +2,7 @@
 # Real optimization: Pre-warm models at startup (not per-request)
 # This saves 20-40 seconds of initialization time
 # OCR stays enabled for compressed/image PDFs
-# IMPROVED: Better product name extraction for catalogues
+# IMPROVED: Better brand, SKU, and variant extraction
 
 import os
 import json
@@ -38,21 +38,18 @@ app.add_middleware(
 )
 
 # ⚡ CRITICAL OPTIMIZATION: Pre-initialize converter with models at startup
-# This loads ALL models ONCE instead of on every request
-# Saves 20-40 seconds per request!
 print("[STARTUP] 🔄 Pre-warming Docling converter with OCR models...")
 print("[STARTUP] This takes 30-60 seconds but only happens ONCE at startup...")
 
 pipeline_options = PdfPipelineOptions()
 pipeline_options.do_ocr = True  # ✅ OCR ENABLED for compressed/image PDFs
-pipeline_options.do_table_structure = True  # Keep table detection
-pipeline_options.images_scale = 2.0  # Higher quality OCR
-pipeline_options.generate_page_images = False  # Don't need page images
-pipeline_options.generate_picture_images = False  # Don't need picture images
+pipeline_options.do_table_structure = True
+pipeline_options.images_scale = 2.0
+pipeline_options.generate_page_images = False
+pipeline_options.generate_picture_images = False
 
-# Pre-load OCR with optimized settings
 ocr_options = EasyOcrOptions()
-ocr_options.lang = ["en"]  # English only - faster than multi-language
+ocr_options.lang = ["en"]
 
 CONVERTER = DocumentConverter(
     format_options={
@@ -87,12 +84,7 @@ async def convert_body(
     x_api_key_dash: Optional[str] = Header(default=None, alias="x-api-key"),
     x_api_key_under: Optional[str] = Header(default=None, alias="x_api_key", convert_underscores=False),
 ):
-    """
-    OPTIMIZED: Fast PDF processing with OCR
-    - Uses pre-warmed converter (saves 20-40s per request)
-    - OCR enabled for compressed/image PDFs
-    - Models loaded at startup, not per-request
-    """
+    """Fast PDF processing with OCR and improved extraction"""
     import time
     start_time = time.time()
     
@@ -110,7 +102,6 @@ async def convert_body(
     tmp_path = await fetch_to_tmp(req.file_url)
 
     try:
-        # ⚡ Use pre-warmed converter - models already loaded!
         print("[CONVERT] Converting PDF with pre-loaded OCR...")
         convert_start = time.time()
         
@@ -157,7 +148,7 @@ async def convert_body(
             }
         }
 
-        print(f"[CONVERT] 📦 Extracted: {inferred.get('product_name')} | Variants: {len(inferred.get('variants', []))}")
+        print(f"[CONVERT] 📦 Extracted: {inferred.get('product_name')} | Brand: {inferred.get('brand_name')} | SKUs: {len(inferred.get('all_skus', []))} | Variants: {len(inferred.get('variants', []))}")
 
         # Call brand-voice
         try:
@@ -227,9 +218,7 @@ async def call_brand_voice(products: List[dict], category: str) -> List[dict]:
 
 
 def infer_product_fields_improved(doc_json: Optional[dict], markdown: Optional[str]) -> Optional[dict]:
-    """
-    IMPROVED: Extract product fields with better logic for product catalogues
-    """
+    """IMPROVED: Extract product fields with better logic for catalogues"""
     if doc_json is None and not markdown:
         return None
 
@@ -260,45 +249,41 @@ def infer_product_fields_improved(doc_json: Optional[dict], markdown: Optional[s
     power = None
     summary = None
 
-   # STEP 1: Extract Brand
-print("[EXTRACT] Looking for brand...")
-for i, line in enumerate(lines[:15]):
-    line_clean = line.strip().replace("#", "").strip()
-    if not line_clean or len(line_clean) < 2:
-        continue
-    
-    # Match ALL CAPS brand names like "ZWILLING"
-    if line_clean.isupper() and 3 < len(line_clean) < 30 and ' ' not in line_clean:
-        brand_name = line_clean
-        print(f"[EXTRACT] ✅ Found brand (all caps): {brand_name}")
-        break
-    
-    # Match Title Case like "Sage Appliances"
-    if re.match(r'^[A-Z][a-z]+(\s+[A-Z][a-z]+)?$', line_clean) and len(line_clean) < 30:
-        if not brand_name:
+    # STEP 1: Extract Brand - IMPROVED
+    print("[EXTRACT] Looking for brand...")
+    for i, line in enumerate(lines[:15]):
+        line_clean = line.strip().replace("#", "").strip()
+        if not line_clean or len(line_clean) < 2:
+            continue
+        
+        # Match ALL CAPS brand names like "ZWILLING"
+        if line_clean.isupper() and 3 < len(line_clean) < 30 and ' ' not in line_clean:
             brand_name = line_clean
-            print(f"[EXTRACT] ✅ Found brand (title case): {brand_name}")
+            print(f"[EXTRACT] ✅ Found brand (all caps): {brand_name}")
             break
+        
+        # Match Title Case like "Sage Appliances"
+        if re.match(r'^[A-Z][a-z]+(\s+[A-Z][a-z]+)?$', line_clean) and len(line_clean) < 30:
+            if not brand_name:
+                brand_name = line_clean
+                print(f"[EXTRACT] ✅ Found brand (title case): {brand_name}")
+                break
 
-    # STEP 2: Extract Product Name - IMPROVED FOR CATALOGUES
+    # STEP 2: Extract Product Name
     print("[EXTRACT] Looking for product name...")
-    for i, line in enumerate(lines[:80]):  # Search more lines
+    for i, line in enumerate(lines[:80]):
         line_clean = line.strip().replace("#", "").strip()
         line_lower = line_clean.lower()
         
-        # Skip empty or too short
         if not line_clean or len(line_clean) < 5:
             continue
         
-        # Skip technical sections
         if any(skip in line_lower for skip in ["technical", "specification", "dimension", "weight", "power", "sku", "ean"]):
             continue
         
-        # Skip bullets and numbers
         if line_clean.startswith(("•", "-", "*")) or re.match(r'^\d+\.', line_clean):
             continue
         
-        # Look for product indicators (common appliance/product words)
         product_indicators = [
             "grill", "machine", "maker", "pro", "plus", "espresso", 
             "coffee", "blender", "contact", "enfinigy", "barista",
@@ -311,22 +296,18 @@ for i, line in enumerate(lines[:15]):
                 print(f"[EXTRACT] ✅ Found product name (indicator): {product_name}")
                 break
         
-        # Check for ALL CAPS titles (common in product catalogues)
         if line_clean.isupper() and 10 < len(line_clean) < 100:
-            product_name = line_clean.title()  # Convert to Title Case
+            product_name = line_clean.title()
             print(f"[EXTRACT] ✅ Found product name (all caps): {product_name}")
             break
         
-        # Check for Title Case lines (Product Names Are Often Like This)
         if re.match(r'^[A-Z][a-z]+(\s+[A-Z][a-z]+)+$', line_clean) and 10 < len(line_clean) < 100:
             product_name = line_clean
             print(f"[EXTRACT] ✅ Found product name (title case): {product_name}")
             break
 
-    # Fallback if still no product name
     if not product_name:
         print("[EXTRACT] ⚠️ No product name found, using fallback...")
-        # Use first substantial non-header line
         for line in lines[5:30]:
             line_clean = line.strip().replace("#", "").strip()
             if 15 < len(line_clean) < 150 and not line_clean.startswith(("•", "-", "*")):
@@ -343,47 +324,65 @@ for i, line in enumerate(lines[:15]):
             print(f"[EXTRACT] Found model: {model_number}")
             break
 
-   # STEP 4: Extract SKU Codes & Item Numbers
-# Look for "Item number:" or "Item code:" patterns
-for line in lines:
-    if "item number" in line.lower() or "item code" in line.lower():
-        # Extract number after the label
-        match = re.search(r'(?:item\s+(?:number|code))[\s:]+(\d+)', line, re.IGNORECASE)
-        if match:
-            sku_codes.append(match.group(1))
-            print(f"[EXTRACT] Found item number: {match.group(1)}")
-    
-    # Also look for EAN codes
-    if "ean" in line.lower():
-        match = re.search(r'ean[\s:]+(\d{13})', line, re.IGNORECASE)
-        if match:
-            sku_codes.append(f"EAN-{match.group(1)}")
-            print(f"[EXTRACT] Found EAN: {match.group(1)}")
-    
-    # Original pattern for formats like "SES882BSS4GUK1"
-    matches = re.findall(r'\b[A-Z]{2,}[0-9]{3,}[A-Z0-9]{5,}\b', line)
-    for match in matches:
-        if match not in sku_codes and match not in line_clean:  # Avoid duplicates
-            sku_codes.append(match)
-
-if sku_codes:
-    print(f"[EXTRACT] Found {len(sku_codes)} SKU(s)")
-
-  # STEP 5: Extract Variants/Colors
-# Only extract if we find actual color/finish indicators
-color_keywords = ["stainless", "steel", "black", "white", "truffle", "brushed", "chrome", "silver", "red", "blue"]
-for line in lines:
-    line_lower = line.lower()
-    
-    # Skip if line doesn't contain color keywords
-    if not any(color in line_lower for color in color_keywords):
-        continue
-    
-    # Look for patterns like "Stainless Steel SST" or "Black Truffle BLK"
-    variant_match = re.search(r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+([A-Z]{3})\s+', line)
-    if variant_match:
+    # STEP 4: Extract SKU Codes & Item Numbers - IMPROVED
+    for line in lines:
+        line_lower = line.lower()
         
-    # STEP 6: Extract Features (bullet points)
+        # Look for "Item number:" or "Item code:"
+        if "item number" in line_lower or "item code" in line_lower:
+            match = re.search(r'(?:item\s+(?:number|code))[\s:]+(\d+)', line, re.IGNORECASE)
+            if match and match.group(1) not in sku_codes:
+                sku_codes.append(match.group(1))
+                print(f"[EXTRACT] Found item number: {match.group(1)}")
+        
+        # Look for EAN codes
+        if "ean" in line_lower:
+            match = re.search(r'ean[\s:]+(\d{13})', line, re.IGNORECASE)
+            if match:
+                ean_code = f"EAN-{match.group(1)}"
+                if ean_code not in sku_codes:
+                    sku_codes.append(ean_code)
+                    print(f"[EXTRACT] Found EAN: {match.group(1)}")
+        
+        # Original pattern for formats like "SES882BSS4GUK1"
+        matches = re.findall(r'\b[A-Z]{2,}[0-9]{3,}[A-Z0-9]{5,}\b', line)
+        for match in matches:
+            if match not in sku_codes:
+                sku_codes.append(match)
+
+    if sku_codes:
+        print(f"[EXTRACT] Found {len(sku_codes)} SKU(s)")
+
+    # STEP 5: Extract Variants/Colors - IMPROVED (skip fake variants)
+    color_keywords = ["stainless", "steel", "black", "white", "truffle", "brushed", "chrome", "silver", "red", "blue"]
+    for line in lines:
+        line_lower = line.lower()
+        
+        # Skip if line doesn't contain color keywords
+        if not any(color in line_lower for color in color_keywords):
+            continue
+        
+        # Look for patterns like "Stainless Steel SST" or "Black Truffle BLK"
+        variant_match = re.search(r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+([A-Z]{3})\s+', line)
+        if variant_match:
+            variant_name = variant_match.group(1)
+            variant_code = variant_match.group(2)
+            if variant_name not in [v.get("name") for v in variants]:
+                variant_sku = None
+                for sku in sku_codes:
+                    if variant_code in sku:
+                        variant_sku = sku
+                        break
+                variants.append({
+                    "name": variant_name,
+                    "code": variant_code,
+                    "sku": variant_sku
+                })
+    
+    if variants:
+        print(f"[EXTRACT] Found {len(variants)} variant(s)")
+
+    # STEP 6: Extract Features
     for line in lines:
         line_clean = line.strip()
         if line_clean.startswith("•") or line_clean.startswith("-") or line_clean.startswith("*"):
@@ -391,7 +390,7 @@ for line in lines:
             if 10 < len(feature_text) < 200:
                 features.append(feature_text)
 
-    # STEP 7: Generate summary (first meaningful paragraph)
+    # STEP 7: Generate summary
     for line in lines[:50]:
         line_clean = line.strip().replace("#", "").strip()
         if 30 < len(line_clean) < 200 and not line_clean.startswith(("•", "-", "*")):
