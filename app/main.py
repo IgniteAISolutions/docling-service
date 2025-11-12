@@ -251,8 +251,25 @@ def infer_product_fields_improved(doc_json: Optional[dict], markdown: Optional[s
 
     # STEP 1: Extract Brand - IMPROVED
     print("[EXTRACT] Looking for brand...")
-    for i, line in enumerate(lines[:15]):
-        line_clean = line.strip().replace("#", "").strip()
+    for i, line in enumerate(lines[:20]):
+        # First try raw line (with ## markers)
+        line_raw = line.strip()
+        
+        # Check if it's a heading with brand name
+        if line_raw.startswith("#"):
+            # Remove all # symbols and whitespace
+            line_clean = re.sub(r'^#+\s*', '', line_raw).strip()
+            
+            # Match ALL CAPS brand names like "ZWILLING" in headings
+            if line_clean.isupper() and 3 < len(line_clean) < 30:
+                # Check if it's JUST the brand (not a full product name)
+                if ' ' not in line_clean or len(line_clean.split()) <= 2:
+                    brand_name = line_clean
+                    print(f"[EXTRACT] ✅ Found brand (heading): {brand_name}")
+                    break
+        
+        # Also check non-heading lines
+        line_clean = line_raw.replace("#", "").strip()
         if not line_clean or len(line_clean) < 2:
             continue
         
