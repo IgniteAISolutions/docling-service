@@ -1,7 +1,8 @@
-# app/main.py - OPTIMIZED VERSION WITH OCR
+# app/main.py - OPTIMIZED VERSION WITH OCR + IMPROVED EXTRACTION
 # Real optimization: Pre-warm models at startup (not per-request)
 # This saves 20-40 seconds of initialization time
 # OCR stays enabled for compressed/image PDFs
+# IMPROVED: Better product name extraction for catalogues
 
 import os
 import json
@@ -226,7 +227,9 @@ async def call_brand_voice(products: List[dict], category: str) -> List[dict]:
 
 
 def infer_product_fields_improved(doc_json: Optional[dict], markdown: Optional[str]) -> Optional[dict]:
-    """Extract product fields - SAME AS BEFORE"""
+    """
+    IMPROVED: Extract product fields with better logic for product catalogues
+    """
     if doc_json is None and not markdown:
         return None
 
@@ -257,49 +260,97 @@ def infer_product_fields_improved(doc_json: Optional[dict], markdown: Optional[s
     power = None
     summary = None
 
-    # Brand extraction
+    # STEP 1: Extract Brand (usually in header or logo alt text)
+    print("[EXTRACT] Looking for brand...")
     for i, line in enumerate(lines[:10]):
         line_clean = line.strip().replace("#", "").strip()
         if not line_clean or len(line_clean) < 2:
             continue
-        if re.match(r'^[A-Z][a-z]+$', line_clean) or re.match(r'^[A-Z][a-z]+\s+[A-Z][a-z]+$', line_clean):
+        
+        # Common brand patterns: "ZWILLING", "Sage Appliances", etc.
+        if re.match(r'^[A-Z][a-z]+$', line_clean) or re.match(r'^[A-Z][A-Z]+$', line_clean):
             if not brand_name and len(line_clean) < 30:
                 brand_name = line_clean
+                print(f"[EXTRACT] ✅ Found brand: {brand_name}")
                 break
 
-    # Product name extraction
-    for i, line in enumerate(lines[:30]):
+    # STEP 2: Extract Product Name - IMPROVED FOR CATALOGUES
+    print("[EXTRACT] Looking for product name...")
+    for i, line in enumerate(lines[:80]):  # Search more lines
         line_clean = line.strip().replace("#", "").strip()
         line_lower = line_clean.lower()
-        if not line_clean or "product technical" in line_lower or "spec" in line_lower:
+        
+        # Skip empty or too short
+        if not line_clean or len(line_clean) < 5:
             continue
-        if line_clean.startswith("•") or line_clean.startswith("-"):
+        
+        # Skip technical sections
+        if any(skip in line_lower for skip in ["technical", "specification", "dimension", "weight", "power", "sku", "ean"]):
             continue
-        if re.match(r'^\d', line_clean):
+        
+        # Skip bullets and numbers
+        if line_clean.startswith(("•", "-", "*")) or re.match(r'^\d+\.', line_clean):
             continue
-        if any(indicator in line_lower for indicator in ["the ", "™", "®"]):
-            if not product_name and 5 < len(line_clean) < 100:
+        
+        # Look for product indicators (common appliance/product words)
+        product_indicators = [
+            "grill", "machine", "maker", "pro", "plus", "espresso", 
+            "coffee", "blender", "contact", "enfinigy", "barista",
+            "toaster", "kettle", "mixer", "processor", "juicer"
+        ]
+        
+        if any(indicator in line_lower for indicator in product_indicators):
+            if 5 < len(line_clean) < 150:
                 product_name = line_clean
+                print(f"[EXTRACT] ✅ Found product name (indicator): {product_name}")
+                break
+        
+        # Check for ALL CAPS titles (common in product catalogues)
+        if line_clean.isupper() and 10 < len(line_clean) < 100:
+            product_name = line_clean.title()  # Convert to Title Case
+            print(f"[EXTRACT] ✅ Found product name (all caps): {product_name}")
+            break
+        
+        # Check for Title Case lines (Product Names Are Often Like This)
+        if re.match(r'^[A-Z][a-z]+(\s+[A-Z][a-z]+)+$', line_clean) and 10 < len(line_clean) < 100:
+            product_name = line_clean
+            print(f"[EXTRACT] ✅ Found product name (title case): {product_name}")
+            break
+
+    # Fallback if still no product name
+    if not product_name:
+        print("[EXTRACT] ⚠️ No product name found, using fallback...")
+        # Use first substantial non-header line
+        for line in lines[5:30]:
+            line_clean = line.strip().replace("#", "").strip()
+            if 15 < len(line_clean) < 150 and not line_clean.startswith(("•", "-", "*")):
+                product_name = line_clean
+                print(f"[EXTRACT] Using fallback: {product_name}")
                 break
 
-    # Model number
+    # STEP 3: Extract Model Number
     model_pattern = r'\b[A-Z]{2,}[0-9]{2,}\b'
     for line in lines[:50]:
         matches = re.findall(model_pattern, line)
         if matches and not model_number:
             model_number = matches[0]
+            print(f"[EXTRACT] Found model: {model_number}")
             break
 
-    # SKU codes
+    # STEP 4: Extract SKU Codes
     sku_pattern = r'\b[A-Z]{2,}[0-9]{3,}[A-Z0-9]{5,}\b'
     for line in lines:
         matches = re.findall(sku_pattern, line)
         for match in matches:
             if match not in sku_codes:
                 sku_codes.append(match)
+    
+    if sku_codes:
+        print(f"[EXTRACT] Found {len(sku_codes)} SKU(s)")
 
-    # Variants
+    # STEP 5: Extract Variants/Colors
     for line in lines:
+        # Look for patterns like "Stainless Steel SST" or "Black Truffle BLK"
         variant_match = re.search(r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+([A-Z]{3})\s+', line)
         if variant_match:
             variant_name = variant_match.group(1)
@@ -316,19 +367,22 @@ def infer_product_fields_improved(doc_json: Optional[dict], markdown: Optional[s
                     "code": variant_code,
                     "sku": variant_sku
                 })
+    
+    if variants:
+        print(f"[EXTRACT] Found {len(variants)} variant(s)")
 
-    # Features
+    # STEP 6: Extract Features (bullet points)
     for line in lines:
         line_clean = line.strip()
-        if line_clean.startswith("•") or line_clean.startswith("-"):
-            feature_text = line_clean.lstrip("•-").strip()
+        if line_clean.startswith("•") or line_clean.startswith("-") or line_clean.startswith("*"):
+            feature_text = line_clean.lstrip("•-*").strip()
             if 10 < len(feature_text) < 200:
                 features.append(feature_text)
 
-    # Summary
+    # STEP 7: Generate summary (first meaningful paragraph)
     for line in lines[:50]:
         line_clean = line.strip().replace("#", "").strip()
-        if 30 < len(line_clean) < 200 and not line_clean.startswith("•"):
+        if 30 < len(line_clean) < 200 and not line_clean.startswith(("•", "-", "*")):
             if not any(skip in line_clean.lower() for skip in ["product", "technical", "spec"]):
                 summary = line_clean
                 break
