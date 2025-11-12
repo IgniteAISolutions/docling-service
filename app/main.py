@@ -260,19 +260,25 @@ def infer_product_fields_improved(doc_json: Optional[dict], markdown: Optional[s
     power = None
     summary = None
 
-    # STEP 1: Extract Brand (usually in header or logo alt text)
-    print("[EXTRACT] Looking for brand...")
-    for i, line in enumerate(lines[:10]):
-        line_clean = line.strip().replace("#", "").strip()
-        if not line_clean or len(line_clean) < 2:
-            continue
-        
-        # Common brand patterns: "ZWILLING", "Sage Appliances", etc.
-        if re.match(r'^[A-Z][a-z]+$', line_clean) or re.match(r'^[A-Z][A-Z]+$', line_clean):
-            if not brand_name and len(line_clean) < 30:
-                brand_name = line_clean
-                print(f"[EXTRACT] ✅ Found brand: {brand_name}")
-                break
+   # STEP 1: Extract Brand
+print("[EXTRACT] Looking for brand...")
+for i, line in enumerate(lines[:15]):
+    line_clean = line.strip().replace("#", "").strip()
+    if not line_clean or len(line_clean) < 2:
+        continue
+    
+    # Match ALL CAPS brand names like "ZWILLING"
+    if line_clean.isupper() and 3 < len(line_clean) < 30 and ' ' not in line_clean:
+        brand_name = line_clean
+        print(f"[EXTRACT] ✅ Found brand (all caps): {brand_name}")
+        break
+    
+    # Match Title Case like "Sage Appliances"
+    if re.match(r'^[A-Z][a-z]+(\s+[A-Z][a-z]+)?$', line_clean) and len(line_clean) < 30:
+        if not brand_name:
+            brand_name = line_clean
+            print(f"[EXTRACT] ✅ Found brand (title case): {brand_name}")
+            break
 
     # STEP 2: Extract Product Name - IMPROVED FOR CATALOGUES
     print("[EXTRACT] Looking for product name...")
@@ -337,40 +343,46 @@ def infer_product_fields_improved(doc_json: Optional[dict], markdown: Optional[s
             print(f"[EXTRACT] Found model: {model_number}")
             break
 
-    # STEP 4: Extract SKU Codes
-    sku_pattern = r'\b[A-Z]{2,}[0-9]{3,}[A-Z0-9]{5,}\b'
-    for line in lines:
-        matches = re.findall(sku_pattern, line)
-        for match in matches:
-            if match not in sku_codes:
-                sku_codes.append(match)
+   # STEP 4: Extract SKU Codes & Item Numbers
+# Look for "Item number:" or "Item code:" patterns
+for line in lines:
+    if "item number" in line.lower() or "item code" in line.lower():
+        # Extract number after the label
+        match = re.search(r'(?:item\s+(?:number|code))[\s:]+(\d+)', line, re.IGNORECASE)
+        if match:
+            sku_codes.append(match.group(1))
+            print(f"[EXTRACT] Found item number: {match.group(1)}")
     
-    if sku_codes:
-        print(f"[EXTRACT] Found {len(sku_codes)} SKU(s)")
-
-    # STEP 5: Extract Variants/Colors
-    for line in lines:
-        # Look for patterns like "Stainless Steel SST" or "Black Truffle BLK"
-        variant_match = re.search(r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+([A-Z]{3})\s+', line)
-        if variant_match:
-            variant_name = variant_match.group(1)
-            variant_code = variant_match.group(2)
-            if variant_name not in [v.get("name") for v in variants]:
-                # Try to find SKU for this variant
-                variant_sku = None
-                for sku in sku_codes:
-                    if variant_code in sku:
-                        variant_sku = sku
-                        break
-                variants.append({
-                    "name": variant_name,
-                    "code": variant_code,
-                    "sku": variant_sku
-                })
+    # Also look for EAN codes
+    if "ean" in line.lower():
+        match = re.search(r'ean[\s:]+(\d{13})', line, re.IGNORECASE)
+        if match:
+            sku_codes.append(f"EAN-{match.group(1)}")
+            print(f"[EXTRACT] Found EAN: {match.group(1)}")
     
-    if variants:
-        print(f"[EXTRACT] Found {len(variants)} variant(s)")
+    # Original pattern for formats like "SES882BSS4GUK1"
+    matches = re.findall(r'\b[A-Z]{2,}[0-9]{3,}[A-Z0-9]{5,}\b', line)
+    for match in matches:
+        if match not in sku_codes and match not in line_clean:  # Avoid duplicates
+            sku_codes.append(match)
 
+if sku_codes:
+    print(f"[EXTRACT] Found {len(sku_codes)} SKU(s)")
+
+  # STEP 5: Extract Variants/Colors
+# Only extract if we find actual color/finish indicators
+color_keywords = ["stainless", "steel", "black", "white", "truffle", "brushed", "chrome", "silver", "red", "blue"]
+for line in lines:
+    line_lower = line.lower()
+    
+    # Skip if line doesn't contain color keywords
+    if not any(color in line_lower for color in color_keywords):
+        continue
+    
+    # Look for patterns like "Stainless Steel SST" or "Black Truffle BLK"
+    variant_match = re.search(r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+([A-Z]{3})\s+', line)
+    if variant_match:
+        
     # STEP 6: Extract Features (bullet points)
     for line in lines:
         line_clean = line.strip()
