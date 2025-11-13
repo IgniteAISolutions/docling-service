@@ -14,88 +14,12 @@ from typing import Any, Dict, List, Optional
 from enum import Enum
 
 from fastapi import FastAPI, Header, HTTPException, BackgroundTasks
-from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from docling.document_converter import DocumentConverter, ConversionResult
 
 from app.models import ExtractRequest, ExtractResponse, ProductFields
 from app.batching import make_ranges
 from app.utils import fetch_to_tmp
-
-def extract_multiple_products(markdown: Optional[str]) -> List[Dict]:
-    """Extract multiple products from PDF by detecting SKU patterns"""
-    if not markdown:
-        return []
-    
-    lines = markdown.split('\n')
-    products = []
-    
-    # Find all SKU codes (SEA203, SEA303, etc.)
-    sku_pattern = r'\b(SEA\d{3})\b'
-    all_skus = set()
-    sku_locations = {}
-    
-    for i, line in enumerate(lines):
-        matches = re.findall(sku_pattern, line)
-        for sku in matches:
-            all_skus.add(sku)
-            if sku not in sku_locations:
-                sku_locations[sku] = []
-            sku_locations[sku].append(i)
-    
-    if not all_skus:
-        return []
-    
-    print(f"[EXTRACT] Found {len(all_skus)} products: {all_skus}")
-    
-    # Extract brand
-    brand_name = "Sage"
-    
-    # For each SKU, extract product details  
-    for sku in sorted(all_skus):
-        relevant_lines = []
-        for line_num in sku_locations[sku]:
-            start = max(0, line_num - 15)
-            end = min(len(lines), line_num + 30)
-            relevant_lines.extend(lines[start:end])
-        
-        relevant_text = ' '.join(relevant_lines)
-        
-        # Extract size
-        size = None
-        if "54mm" in relevant_text or "54 mm" in relevant_text:
-            size = "54mm"
-            dimensions = "110 x 63 x 63mm"
-        elif "58mm" in relevant_text or "58 mm" in relevant_text:
-            size = "58mm"
-            dimensions = "110 x 67 x 67mm"
-        else:
-            dimensions = None
-        
-        product = {
-            "sku_code": sku,
-            "product_name": f"the Distribution Duo {size}" if size else "the Distribution Duo",
-            "brand_name": brand_name,
-            "model_number": sku,
-            "all_skus": [sku],
-            "variants": [],
-            "prices": {},
-            "dimensions": dimensions,
-            "features": [
-                "2-in-1 distribution tool",
-                "Breaks up clumps",
-                "Three angled blades",
-                "Adjustable height",
-                "Stainless steel and walnut"
-            ],
-            "summary": f"Distribution tool for {size} portafilters" if size else "Distribution tool",
-            "description": f"2-in-1 tool for {size} Breville portafilters" if size else "2-in-1 distribution tool"
-        }
-        
-        products.append(product)
-    
-    return products if products else []
-
 
 # Configuration
 API_KEY = os.getenv("DOCLING_API_KEY", "")
@@ -237,15 +161,7 @@ async def get_job_status(job_id: str):
     elif job['status'] == JobStatus.FAILED:
         response['error'] = job['error']
     
-    from fastapi.responses import JSONResponse
-    return JSONResponse(
-        content=response,
-        headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET, OPTIONS",
-            "Access-Control-Allow-Headers": "*"
-        }
-    )
+    return response
 
 
 async def process_pdf_job(job_id: str):
@@ -285,8 +201,6 @@ async def process_pdf_job(job_id: str):
             if not req.page_end:
                 result: ConversionResult = converter.convert(tmp_path)
                 md = result.document.export_to_markdown() if req.return_markdown else None
-            print(f"[JOB {job_id}] Extracted {len(result.document.pages)} pages")
-            print(f"[JOB {job_id}] Markdown length: {len(md) if md else 0} chars")
                 jj = result.document.export_to_dict() if req.return_json else None
                 pages_processed = len(result.document.pages)
             else:
@@ -323,45 +237,6 @@ async def process_pdf_job(job_id: str):
             
             # Extract product fields
             inferred = infer_product_fields_improved(jj, md)
-            print(f"[JOB {job_id}] Inferred product: {inferred}")
-            
-            # Try to extract multiple products
-            multi_products = extract_multiple_products(md)
-            print(f"[JOB {job_id}] Multi-products found: {len(multi_products)}")
-            if multi_products:
-                for mp in multi_products:
-                    print(f"[JOB {job_id}]   - SKU: {mp.get('sku_code')}, Name: {mp.get('product_name')}")
-            
-            # If multiple products found, use them
-            if len(multi_products) > 1:
-                print(f"[JOB {job_id}] Found {len(multi_products)} products")
-                products_list = []
-                for mp in multi_products:
-                    product = {
-                        "id": os.urandom(16).hex(),
-                        "name": mp.get("product_name", "Extracted Product"),
-                        "brand": mp.get("brand_name", ""),
-                        "sku": mp.get("sku_code", ""),
-                        "category": category,
-                        "source": "docling",
-                        "specifications": {
-                            "model": mp.get("model_number", ""),
-                            "dimensions": mp.get("dimensions", ""),
-                            "pages_processed": pages_processed,
-                        },
-                        "features": mp.get("features", []),
-                        "descriptions": {
-                            "shortDescription": mp.get("summary", ""),
-                            "metaDescription": mp.get("summary", "")[:160] if mp.get("summary") else "",
-                            "longDescription": mp.get("description", ""),
-                        }
-                    }
-                    products_list.append(product)
-                
-                # Use multi-products instead of single
-                products = products_list
-            else:
-                # Single product flow (existing code)
             
             # Build product
             product = {
@@ -464,8 +339,6 @@ async def convert_body(
         if not req.page_end:
             result: ConversionResult = converter.convert(tmp_path)
             md = result.document.export_to_markdown() if req.return_markdown else None
-            print(f"[JOB {job_id}] Extracted {len(result.document.pages)} pages")
-            print(f"[JOB {job_id}] Markdown length: {len(md) if md else 0} chars")
             jj = result.document.export_to_dict() if req.return_json else None
             pages_processed = len(result.document.pages)
         else:
@@ -492,55 +365,12 @@ async def convert_body(
                 if jj_b and isinstance(jj_b, dict) and "pages" in jj_b:
                     merged_json["pages"].extend(jj_b["pages"])
 
-            md = "\n            \n            # Check for multiple products\n            multi_products = extract_multiple_products(md)\n            \n            # If multiple products found, process them all\n            if len(multi_products) > 1:\n                print(f"[JOB {job_id}] Extracted {len(multi_products)} products")\n                all_products = []\n                for mp in multi_products:\n                    prod = {\n                        "id": os.urandom(16).hex(),\n                        "name": mp.get("product_name", ""),\n                        "brand": mp.get("brand_name", ""),\n                        "sku": mp.get("sku_code", ""),\n                        "category": category,\n                        "source": "docling",\n                        "rawExtractedContent": mp.get("description", ""),\n                        "specifications": {\n                            "model": mp.get("model_number", ""),\n                            "dimensions": mp.get("dimensions", ""),\n                            "pages_processed": pages_processed,\n                        },\n                        "features": mp.get("features", []),\n                        "descriptions": {\n                            "shortDescription": mp.get("summary", ""),\n                            "metaDescription": mp.get("summary", "")[:160] if mp.get("summary") else "",\n                            "longDescription": mp.get("description", ""),\n                        }\n                    }\n                    all_products.append(prod)\n                \n                # Send all products to brand voice\n                try:\n                    enhanced = await call_brand_voice(all_products, category)\n                    products = enhanced\n                except Exception as e:\n                    print(f"[JOB {job_id}] Brand voice failed: {e}")\n                    products = all_products\n            else:\n                # Single product flow (continue with existing code)\n                \n\n".join(markdown_parts) if markdown_parts else None
-            print(f"[JOB {job_id}] Multi-products found: {len(multi_products)}")
-            if multi_products:
-                for mp in multi_products:
-                    print(f"[JOB {job_id}]   - SKU: {mp.get('sku_code')}, Name: {mp.get('product_name')}")
+            md = "\n\n".join(markdown_parts) if markdown_parts else None
             jj = merged_json if merged_json.get("pages") else None
             pages_processed = total_pages
 
         # Extract product fields
         inferred = infer_product_fields_improved(jj, md)
-            print(f"[JOB {job_id}] Inferred product: {inferred}")
-            
-            # Try to extract multiple products
-            multi_products = extract_multiple_products(md)
-            print(f"[JOB {job_id}] Multi-products found: {len(multi_products)}")
-            if multi_products:
-                for mp in multi_products:
-                    print(f"[JOB {job_id}]   - SKU: {mp.get('sku_code')}, Name: {mp.get('product_name')}")
-            
-            # If multiple products found, use them
-            if len(multi_products) > 1:
-                print(f"[JOB {job_id}] Found {len(multi_products)} products")
-                products_list = []
-                for mp in multi_products:
-                    product = {
-                        "id": os.urandom(16).hex(),
-                        "name": mp.get("product_name", "Extracted Product"),
-                        "brand": mp.get("brand_name", ""),
-                        "sku": mp.get("sku_code", ""),
-                        "category": category,
-                        "source": "docling",
-                        "specifications": {
-                            "model": mp.get("model_number", ""),
-                            "dimensions": mp.get("dimensions", ""),
-                            "pages_processed": pages_processed,
-                        },
-                        "features": mp.get("features", []),
-                        "descriptions": {
-                            "shortDescription": mp.get("summary", ""),
-                            "metaDescription": mp.get("summary", "")[:160] if mp.get("summary") else "",
-                            "longDescription": mp.get("description", ""),
-                        }
-                    }
-                    products_list.append(product)
-                
-                # Use multi-products instead of single
-                products = products_list
-            else:
-                # Single product flow (existing code)
 
         # Build product object
         product = {
@@ -651,11 +481,7 @@ def infer_product_fields_improved(doc_json: Optional[dict], markdown: Optional[s
             "features": [],
         }
 
-    lines = all_text.split("\n            \n            # Check for multiple products\n            multi_products = extract_multiple_products(md)\n            \n            # If multiple products found, process them all\n            if len(multi_products) > 1:\n                print(f"[JOB {job_id}] Extracted {len(multi_products)} products")\n                all_products = []\n                for mp in multi_products:\n                    prod = {\n                        "id": os.urandom(16).hex(),\n                        "name": mp.get("product_name", ""),\n                        "brand": mp.get("brand_name", ""),\n                        "sku": mp.get("sku_code", ""),\n                        "category": category,\n                        "source": "docling",\n                        "rawExtractedContent": mp.get("description", ""),\n                        "specifications": {\n                            "model": mp.get("model_number", ""),\n                            "dimensions": mp.get("dimensions", ""),\n                            "pages_processed": pages_processed,\n                        },\n                        "features": mp.get("features", []),\n                        "descriptions": {\n                            "shortDescription": mp.get("summary", ""),\n                            "metaDescription": mp.get("summary", "")[:160] if mp.get("summary") else "",\n                            "longDescription": mp.get("description", ""),\n                        }\n                    }\n                    all_products.append(prod)\n                \n                # Send all products to brand voice\n                try:\n                    enhanced = await call_brand_voice(all_products, category)\n                    products = enhanced\n                except Exception as e:\n                    print(f"[JOB {job_id}] Brand voice failed: {e}")\n                    products = all_products\n            else:\n                # Single product flow (continue with existing code)\n                \n")
-            print(f"[JOB {job_id}] Multi-products found: {len(multi_products)}")
-            if multi_products:
-                for mp in multi_products:
-                    print(f"[JOB {job_id}]   - SKU: {mp.get('sku_code')}, Name: {mp.get('product_name')}")
+    lines = all_text.split("\n")
     
     # Initialize extraction results
     product_name = None
