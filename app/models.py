@@ -10,6 +10,7 @@ class ExtractRequest(BaseModel):
     per_batch_timeout_sec: int = 120
     return_markdown: bool = True
     return_json: bool = True
+    category: Optional[str] = "Electricals"
 
 class ProductFields(BaseModel):
     brand_name: Optional[str] = None
