@@ -358,38 +358,35 @@ async def process_pdf_job(job_id: str):
                     }
                     products_list.append(product)
                 
-                # Use multi-products instead of single
+                           # Use multi-products instead of single
                 products = products_list
             else:
                 # Single product flow (existing code)
-            
-            # Build product
-            product = {
-                "id": os.urandom(16).hex(),
-                "name": inferred.get("product_name") or "Extracted Product",
-                "brand": inferred.get("brand_name", ""),
-                "sku": inferred.get("sku_code", ""),
-                "category": category,
-                "source": "docling",
-                "rawExtractedContent": md or inferred.get("description", ""),
-                "specifications": {
-                    "model": inferred.get("model_number", ""),
-                    "variants": inferred.get("variants", []),
-                    "all_skus": inferred.get("all_skus", []),
-                    "prices": inferred.get("prices", {}),
-                    "dimensions": inferred.get("dimensions", ""),
-                    "weight": inferred.get("weight", ""),
-                    "power": inferred.get("power", ""),
-                    "pages_processed": pages_processed,
-                    "processing_time_seconds": round(time.time() - start_time, 1),
-                },
-                "features": inferred.get("features", []),
-                "descriptions": {
-                    "shortDescription": inferred.get("summary", ""),
-                    "metaDescription": inferred.get("summary", "")[:160] if inferred.get("summary") else "",
-                    "longDescription": md or inferred.get("description", ""),
+
+                # Build product
+                product = {
+                    "id": os.urandom(16).hex(),
+                    "name": inferred.get("product_name") or "Extracted Product",
+                    "brand": inferred.get("brand_name", ""),
+                    "sku": inferred.get("sku_code", ""),
+                    "category": category,
+                    "source": "docling",
+                    "rawExtractedContent": md or inferred.get("description", ""),
+                    "specifications": {
+                        "model": inferred.get("model_number", ""),
+                        "variants": inferred.get("variants", []),
+                        "all_skus": inferred.get("all_skus", []),
+                        "prices": inferred.get("prices", {}),
+                        "dimensions": inferred.get("dimensions", ""),
+                        "weight": inferred.get("weight", ""),
+                        "power": inferred.get("power", ""),
+                        "pages_processed": pages_processed,
+                        "processing_time_seconds": round(time.time() - start_time, 1),
+                    },
                 }
-            }
+
+                # Wrap single product into a list for a unified return structure
+                products = [product]
             
             job['progress'] = 90
             job['progress_message'] = "Generating brand voice descriptions..."
