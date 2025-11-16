@@ -281,14 +281,14 @@ async def process_pdf_job(job_id: str):
             
             print(f"[JOB {job_id}] Converting PDF...")
             
-            # Convert PDF - Handle both simple and batched
+                      # Convert PDF - Handle both simple and batched
             if not req.page_end:
                 result: ConversionResult = converter.convert(tmp_path)
                 md = result.document.export_to_markdown() if req.return_markdown else None
-            print(f"[JOB {job_id}] Extracted {len(result.document.pages)} pages")
-            print(f"[JOB {job_id}] Markdown length: {len(md) if md else 0} chars")
                 jj = result.document.export_to_dict() if req.return_json else None
                 pages_processed = len(result.document.pages)
+                print(f"[JOB {job_id}] Extracted {pages_processed} pages")
+                print(f"[JOB {job_id}] Markdown length: {len(md) if md else 0} chars")
             else:
                 # Batched conversion
                 page_ranges = make_ranges(req.page_start, req.page_end, req.batch_size)
