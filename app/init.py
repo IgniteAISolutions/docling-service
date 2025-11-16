@@ -1,4 +1,6 @@
 """
-Docling Service Application
+Document processing services
 """
-__version__ = "1.0.0"
+from .document_processor import document_processor, DocumentProcessingService
+
+__all__ = ["document_processor", "DocumentProcessingService"]
