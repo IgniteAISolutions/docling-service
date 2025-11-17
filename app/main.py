@@ -56,7 +56,7 @@ app.add_middleware(
 
 @app.get("/healthz")
 async def healthz():
-    return {"status": "ok"}
+    return {"status":"ok"}
         status="ok",
         version="1.0.0",
         openai_configured=bool(os.getenv("OPENAI_API_KEY"))
