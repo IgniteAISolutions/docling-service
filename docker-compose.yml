@@ -1,4 +1,3 @@
-version: '3.8'
 services:
   docling-service:
     build:
@@ -7,64 +6,17 @@ services:
     container_name: docling-service
     ports:
       - "8080:8080"
-    environment:
-      # Server Configuration
-      - PORT=8080
-      - HOST=0.0.0.0
-      - LOG_LEVEL=info
-      
-      # API Keys
-      - DOCLING_API_KEY=dlk_live_3Qp7yKfZVx9wJ2N5tH0c
-      - EAN_SEARCH_API_KEY=122c4a2c6d8d07b2425746d33b61a6637eebd492
-      - EAN_SEARCH_API_URL=https://api.ean-search.org/api
-      - OPENAI_API_KEY=
-      - OPENAI_MODEL=gpt-4o-mini
-      
-      # Supabase
-      - SUPABASE_URL=https://gxbcqiqwwidoteusipgn.supabase.co
-      - SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imd4YmNxaXF3d2lkb3RldXNpcGduIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTI5MDcxNzAsImV4cCI6MjA2ODQ4MzE3MH0.A2sqSV_8sAMQB9bcy0Oq5JTwuZ0nmniEn7EfGvbgZnk
-      
-      # Service Configuration
-      - MAX_FILE_SIZE_MB=50
-      - ALLOWED_EXTENSIONS=pdf,docx,xlsx,pptx,html,txt
-      - TEMP_DIR=/tmp/docling
-      
-      # Processing Configuration
-      - MAX_CONCURRENT_JOBS=5
-      - ENABLE_OCR=true
-      - OCR_LANGUAGE=eng
-      - OCR_ENGINE=tesseract
-      
-      # CORS Configuration
-      - CORS_ORIGINS=*
-      - CORS_ALLOW_CREDENTIALS=true
-      - CORS_ALLOW_METHODS=*
-      - CORS_ALLOW_HEADERS=*
-      
-      # Timeout Settings
-      - TIMEOUT_KEEP_ALIVE=650
-      - TIMEOUT_GRACEFUL_SHUTDOWN=30
-      
+    env_file:
+      - .env
     volumes:
       - docling-temp:/tmp/docling
-      
     restart: unless-stopped
-    
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/healthz"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 40s
-      
-    deploy:
-      resources:
-        limits:
-          cpus: '2.0'
-          memory: 4G
-        reservations:
-          cpus: '1.0'
-          memory: 2G
 
 volumes:
   docling-temp:
