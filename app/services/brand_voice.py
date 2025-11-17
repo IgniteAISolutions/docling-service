@@ -98,7 +98,7 @@ async def generate_single_product(product: Dict[str, Any], category: str) -> Dic
             logger.debug(f"OpenAI attempt {attempt}/{OPENAI_MAX_RETRIES} for {product.get('name')}")
 
             response = await client.chat.completions.create(
-                model="gpt-4-mini",
+                model="gpt-4o-mini",
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": prompt}
