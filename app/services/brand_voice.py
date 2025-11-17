@@ -97,11 +97,11 @@ async def generate_single_product(product: Dict[str, Any], category: str) -> Dic
         try:
             logger.debug(f"OpenAI attempt {attempt}/{OPENAI_MAX_RETRIES} for {product.get('name')}")
 
-    response = await client.chat.completions.create(
-        model=OPENAI_MODEL,  # ← Uses the env var
-        messages=[
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": prompt}
+            response = await client.chat.completions.create(  # ← Add indentation here
+                model=OPENAI_MODEL,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt}
                 ],
                 temperature=0.4,
                 max_tokens=1200,
