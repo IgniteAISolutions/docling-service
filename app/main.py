@@ -56,11 +56,11 @@ app.add_middleware(
 
 @app.get("/healthz")
 async def healthz():
-    return {"status":"ok"}
-        status="ok",
-        version="1.0.0",
-        openai_configured=bool(os.getenv("OPENAI_API_KEY"))
-    )
+    return {
+        "status": "ok",
+        "version": "1.0.0",
+        "openai_configured": bool(os.getenv("OPENAI_API_KEY"))
+    }
 
 
 @app.post("/api/parse-csv", response_model=ProcessingResponse)
