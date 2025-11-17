@@ -428,7 +428,6 @@ async def get_categories():
         "categories": sorted(list(ALLOWED_CATEGORIES))
     }
 
-
 # Error handlers
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
