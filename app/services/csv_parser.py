@@ -62,4 +62,6 @@ async def process(file_content: bytes, category: str) -> List[Dict[str, Any]]:
     if not products:
         raise ValueError(f"No valid products found in CSV. Processed {row_num} rows with headers: {reader.fieldnames}")
 
-    logger.info(f"Parsed {len(products)} products from CSV")
+   logger.info(f"Parsed {len(products)} products from CSV")
+
+  return products
