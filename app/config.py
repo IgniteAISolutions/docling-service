@@ -34,3 +34,4 @@ class Config:
     REQUEST_TIMEOUT_SECONDS: int = 300
 
 config = Config()
+settings = config
