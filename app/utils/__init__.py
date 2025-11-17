@@ -1,36 +1,15 @@
 """
-Shared utilities for Universal Product Automation
+Utility modules for product automation
 """
-from .text_processing import (
-    sanitize_html_p,
-    strip_brand_taglines,
-    strip_provenance,
-    normalize_paragraphs,
-    sanitize_csv_content,
-    clamp,
-    first_sentence,
-    format_dimensions,
-    format_capacity,
-    categorize_product,
-    extract_sku_patterns,
-    extract_specifications,
-    generate_product_id,
-    validate_product_data,
-)
+from .sanitizers import strip_forbidden_phrases, sanitize_html, normalize_paragraphs
+from .normalizers import normalize_product, normalize_products
+from .csv_exporter import generate_csv
 
 __all__ = [
-    "sanitize_html_p",
-    "strip_brand_taglines",
-    "strip_provenance",
+    "strip_forbidden_phrases",
+    "sanitize_html",
     "normalize_paragraphs",
-    "sanitize_csv_content",
-    "clamp",
-    "first_sentence",
-    "format_dimensions",
-    "format_capacity",
-    "categorize_product",
-    "extract_sku_patterns",
-    "extract_specifications",
-    "generate_product_id",
-    "validate_product_data",
+    "normalize_product",
+    "normalize_products",
+    "generate_csv"
 ]
