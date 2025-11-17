@@ -1,3 +1,0 @@
-[submodule "vendor/docling"]
-	path = vendor/docling
-	url = https://github.com/IgniteAISolutions/docling-PDF.git
