@@ -54,11 +54,10 @@ app.add_middleware(
 )
 
 
-@app.get("/", response_model=HealthResponse)
-async def health_check():
-    """Health check endpoint"""
-    return HealthResponse(
-        status="healthy",
+@app.get("/healthz")
+async def healthz():
+    return {"status": "ok"}
+        status="ok",
         version="1.0.0",
         openai_configured=bool(os.getenv("OPENAI_API_KEY"))
     )
