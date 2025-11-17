@@ -65,3 +65,14 @@ async def process(file_content: bytes, category: str) -> List[Dict[str, Any]]:
    logger.info(f"Parsed {len(products)} products from CSV")
 
   return products
+
+# Get product name (required)
+name = (
+    row.get('name') or
+    row.get('Name') or
+    row.get('product_name') or
+    row.get('Product Name') or
+    row.get('Product Title') or  # ADD THIS LINE
+    row.get('title') or
+    row.get('Title')
+)
