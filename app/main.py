@@ -433,25 +433,28 @@ async def get_categories():
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
     """Handle HTTP exceptions"""
+    from fastapi.responses import JSONResponse
     logger.error(f"HTTP {exc.status_code}: {exc.detail}")
-    return {
-        "success": False,
-        "error": exc.detail,
-        "status_code": exc.status_code
-    }
-
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "success": False,
+            "error": exc.detail,
+        }
+    )
 
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception):
     """Handle general exceptions"""
+    from fastapi.responses import JSONResponse
     logger.error(f"Unhandled exception: {exc}", exc_info=True)
-    return {
-        "success": False,
-        "error": "Internal server error",
-        "status_code": 500
-    }
-
-
+    return JSONResponse(
+        status_code=500,
+        content={
+            "success": False,
+            "error": "Internal server error",
+        }
+    )
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
