@@ -35,3 +35,6 @@ class Config:
 
 config = Config()
 settings = config
+
+
+settings = config
