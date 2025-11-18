@@ -79,7 +79,30 @@ def is_valid_url(url: str) -> bool:
         return all([result.scheme, result.netloc])
     except Exception:
         return False
-
+        
+@app.post("/api/scrape-url", response_model=ProcessingResponse)
+async def scrape_url_endpoint(request: ScrapeURLRequest):
+    """
+    Scrape product data from URL
+    """
+    try:
+        from app.services import url_scraper
+        
+        # Scrape URL
+        products = await url_scraper.scrape(request.url, request.category)
+        
+        # Generate brand voice
+        from app.services import brand_voice
+        enhanced = await brand_voice.generate(products, request.category)
+        
+        return ProcessingResponse(
+            success=True,
+            products=enhanced,
+            message=f"Scraped {len(enhanced)} product(s) from URL"
+        )
+    except Exception as e:
+        logger.error(f"URL scraping failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 def extract_product_from_html(soup: BeautifulSoup, url: str, category: str) -> Dict[str, Any]:
     """
