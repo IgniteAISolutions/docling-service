@@ -71,8 +71,8 @@ class ProductSearchRequest(BaseModel):
     search_type: str = Field(default="sku", description="Search type: sku or ean")
 
 
-class URLScraperRequest(BaseModel):
-    """Request for URL scraping"""
+class ScrapeURLRequest(BaseModel):
+     """Request for URL scraping"""
     url: str
     category: str
 
