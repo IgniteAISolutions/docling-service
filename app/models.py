@@ -27,6 +27,10 @@ class ExtractResponse(BaseModel):
     inferred: Optional[ProductFields] = None
     notes: Optional[List[str]] = None
 
+class HealthResponse(BaseModel):
+    status: str
+    message: Optional[str] = None
+
 class ProductDescription(BaseModel):
     shortDescription: str
     metaDescription: str
