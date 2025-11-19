@@ -1,15 +1,12 @@
-services:
+﻿services:
   docling-service:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    build: .
     container_name: docling-service
     ports:
       - "8080:8080"
-    env_file:
-      - .env
-    volumes:
-      - docling-temp:/tmp/docling
+    environment:
+      DOCLING_API_KEY: "${DOCLING_API_KEY}"
+      PORT: "8080"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/healthz"]
@@ -17,7 +14,3 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
-
-volumes:
-  docling-temp:
-    driver: local
