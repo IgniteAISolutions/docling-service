@@ -84,7 +84,12 @@ def parse_csv_row(row: Dict[str, str], category: str) -> Dict[str, Any]:
         row.get('Product Name') or
         row.get('Product Title') or
         row.get('title') or
-        row.get('Title')
+        row.get('Title') or
+        row.get('Description') or
+        row.get('description') or
+        row.get('Short Description') or
+        row.get('short_description') or
+        row.get('Code')  # Also try Code field
     )
 
     if not name or not name.strip():
