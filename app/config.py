@@ -34,3 +34,13 @@ class Config:
     REQUEST_TIMEOUT_SECONDS: int = 300
 
 config = Config()
+
+# Product categories
+ALLOWED_CATEGORIES = {
+    'Clothing',
+    'Electricals',
+    'Bakeware, Cookware',
+    'Dining, Drink, Living',
+    'Knives, Cutlery',
+    'Food Prep & Tools'
+}
