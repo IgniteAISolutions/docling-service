@@ -1,4 +1,5 @@
 """
+<<<<<<< HEAD
 Service module exports with async wrappers
 """
 import asyncio
@@ -120,3 +121,24 @@ text_processor = TextProcessorService()
 product_search = ProductSearchService()
 url_scraper = URLScraperService()
 brand_voice = BrandVoiceService()
+=======
+Service modules for product automation processing
+"""
+from . import brand_voice
+from . import seo_lighthouse
+from . import csv_parser
+from . import image_processor
+from . import product_search
+from . import url_scraper
+from . import text_processor
+
+__all__ = [
+    "brand_voice",
+    "seo_lighthouse",
+    "csv_parser",
+    "image_processor",
+    "product_search",
+    "url_scraper",
+    "text_processor"
+]
+>>>>>>> 4bb5e0a365344f8e9c6e11a885d4182157a1eec0

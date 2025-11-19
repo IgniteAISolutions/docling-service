@@ -1,220 +1,411 @@
 """
-Brand Voice Generator Service
-Generate brand-appropriate product descriptions using OpenAI.
+Brand Voice Generation Service
+OpenAI GPT-4o-mini with Harts of Stur system prompt
 """
-from openai import AsyncOpenAI
-from typing import List, Dict, Any
-from app.config import config
+import os
 import json
+import logging
+import asyncio
+import re
+from typing import List, Dict, Any, Optional
+from openai import AsyncOpenAI, APIError, OpenAIError
 
-class BrandVoiceGenerator:
-    """Generate brand voice descriptions"""
+from ..config import (
+    OPENAI_MODEL,
+    OPENAI_MAX_RETRIES,
+    OPENAI_TIMEOUT,
+    ALLOWED_SPECS
+)
+from ..utils.sanitizers import strip_forbidden_phrases, sanitize_html
 
-    # Category-specific brand voice prompts
-    CATEGORY_PROMPTS = {
-        "Electricals": {
-            "tone": "professional, technical yet accessible",
-            "focus": "features, specifications, performance, ease of use",
-            "style": "Clear, benefit-focused descriptions highlighting technical capabilities and user experience"
-        },
-        "Bakeware, Cookware": {
-            "tone": "warm, inspiring, practical",
-            "focus": "durability, cooking performance, ease of cleaning",
-            "style": "Engaging descriptions that inspire cooking while emphasizing quality and functionality"
-        },
-        "Dining, Drink, Living": {
-            "tone": "elegant, lifestyle-oriented",
-            "focus": "aesthetics, quality, entertaining",
-            "style": "Sophisticated descriptions that evoke ambiance and lifestyle enhancement"
-        },
-        "Knives, Cutlery": {
-            "tone": "precise, quality-focused",
-            "focus": "craftsmanship, materials, performance",
-            "style": "Detailed descriptions emphasizing precision, quality materials, and professional-grade performance"
-        },
-        "Food Prep & Tools": {
-            "tone": "practical, helpful",
-            "focus": "efficiency, versatility, ease of use",
-            "style": "Clear, practical descriptions highlighting how tools make kitchen tasks easier"
-        },
-        "Clothing": {
-            "tone": "stylish, comfort-focused",
-            "focus": "fabric, fit, style, comfort",
-            "style": "Appealing descriptions balancing style and comfort"
-        }
-    }
+logger = logging.getLogger(__name__)
 
-    def __init__(self):
-        if not config.OPENAI_API_KEY:
-            print("[BrandVoice] WARNING: OPENAI_API_KEY not configured")
-            self.client = None
-        else:
-            self.client = AsyncOpenAI(api_key=config.OPENAI_API_KEY)
+# Initialize OpenAI client
+client: Optional[AsyncOpenAI] = None
 
-    def build_prompt(self, product: Dict[str, Any], category: str) -> str:
-        """Build the prompt for brand voice generation"""
+# HARTS OF STUR SYSTEM PROMPT
+SYSTEM_PROMPT = """
+Act like a senior UK e-commerce copy chief and prompt engineer. You specialise in turning product data into warm, trustworthy, benefit-led copy that helps shoppers choose with confidence. Produce compliant, high-quality HTML only.
 
-        category_guide = self.CATEGORY_PROMPTS.get(
-            category,
-            self.CATEGORY_PROMPTS["Electricals"]  # Default
-        )
+OBJECTIVE
+Return valid JSON with exactly two keys (no markdown, no comments):
+{ "short_html": "<p>…</p>", "long_html": "<p>…</p><p>…</p>…" }
 
-        # Extract existing content
-        name = product.get("name", "")
-        brand = product.get("brand", "")
-        raw_content = product.get("rawExtractedContent", "")
-        existing_desc = product.get("descriptions", {})
+TONE & PRINCIPLES
+- UK English only.
+- Warm, knowledgeable, practical; benefit-first; transparent and reassuring.
+- The business is a retailer/redistributor, not a manufacturer.
+- Do NOT mention retailer location, "Dorset", "family-run", "Since 1919", or any in-house manufacturing.
+- Truthful and product-data-grounded. Never invent specifications or claims.
+- No em dashes.
 
-        # Build context
-        context_parts = []
-        if brand:
-            context_parts.append(f"Brand: {brand}")
-        if name:
-            context_parts.append(f"Product: {name}")
-        if raw_content:
-            context_parts.append(f"Extracted Content:\n{raw_content}")
-        elif existing_desc.get("longDescription"):
-            context_parts.append(f"Description:\n{existing_desc['longDescription']}")
+INPUTS
+You will receive one message with product JSON prefixed by "Product data:". Treat that JSON as the only source of truth.
+It may include: name, brand, category, sku, range/collection, colour/pattern, style/finish, features[], benefits[], specifications{ material, dimensions, capacity, weight, programs/settings, powerW }, origin/madeIn, guarantee/warranty, isNonStick (boolean), care, usage, audience.
 
-        context = "\n".join(context_parts)
+GUARDRAILS
+- Output strictly valid JSON with only "short_html" and "long_html".
+- Never include emojis, ALL CAPS hype, or retail terms (shop, buy, order, price, delivery, shipping).
+- Do not echo placeholders, empty tags, or unknown values. If a spec is missing, omit that line entirely.
+- Key features must not be repeated.
+- Character limits (including HTML tags):
+  – short_html: ≤150 characters
+  – long_html: ≤2000 characters
+- Use concise, plain language. UK spelling.
 
-        prompt = f"""You are a professional product copywriter for an upscale kitchenware and homeware retailer.
+CATEGORY MATRIX (use provided product.category; if absent, use General)
+Clothing — Lifestyle 100 : Technical 0 | Short bullets: material; fit/style; colour/pattern
+Electricals — Lifestyle 0 : Technical 100 | Short bullets: three main product features
+Bakeware, Cookware — Lifestyle 50 : Technical 50 | Short bullets: usage; coating/finish; one standout feature
+Dining, Drink, Living — Lifestyle 80 : Technical 20 | Short bullets: material; style/finish; dimensions or capacity
+Knives, Cutlery — Lifestyle 30 : Technical 70 | Short bullets: material/steel; key feature; guarantee
+Food Prep & Tools — Lifestyle 60 : Technical 40 | Short bullets: key feature; usage; material
+General — Lifestyle 50 : Technical 50 | Short bullets: what it is; who it's for; core benefit
 
-Category: {category}
-Tone: {category_guide['tone']}
-Focus: {category_guide['focus']}
-Style: {category_guide['style']}
+HTML & CONTENT RULES
+A) short_html
+- Exactly one <p>…</p> containing three bullet fragments separated by <br>.
+- Each fragment 2–8 words; sentence case (NOT ALL CAPS); no trailing full stops.
 
-Product Information:
-{context}
+B) long_html (ordered <p> blocks)
+1) Meta description paragraph — one sentence, 150–160 characters; include product name or purpose; approachable, benefit-led; no retail terms; no em dashes; NO category name.
+2) Lifestyle/benefit paragraph(s) per category ratio. Reframe features as outcomes.
+3) Technical paragraph — concise, factual: material/coating, construction, compatibility/usage, range fit, care. Electricals only: include programs/settings and powerW if present; mention auto switch-off only if present.
+4) Spec lines (separate <p> tags) only if data is present and allowed for the category:
+   • <p>Capacity: {CAP}.</p>
+   • <p>Dimensions: {H}(H) x {W}(W) x {D}(D) cm.</p>
+   • <p>Weight: {KG}kg.</p>
+   • <p>Made in UK.</p> only if origin confirms UK.
+   • <p>{Guarantee sentence}</p>:
+     – If isNonStick === true, "10-year guarantee."
+     – Else if guarantee/warranty text is present, echo once with full stop.
+     – Else omit this line.
+5) Optional care/compatibility closer — one short line only if certain (e.g., "Dishwasher safe.", "Oven safe to 260°C."). Do not guess.
 
-Generate three descriptions:
+C) Normalisation & Safety checks
+- Trim whitespace; ensure balanced, ordered <p> tags.
+- If length issues arise, shorten lifestyle text first, never the meta.
+- Remove duplicate facts and promotional fluff.
+- No pricing, shipping, stock, or service language.
+- Parent/child variants: keep copy generic unless sizes/colours are provided.
 
-1. SHORT DESCRIPTION (100-150 words, HTML format):
-- 3-4 key benefits as bullet points
-- Highlight main features
-- Focus on what makes this product special
-- Use <p> and <br> tags
+QUALITY BAR
+- Clear what it is, why it helps, and key specs.
+- Numbers/units formatted exactly as required.
+- Tone: warm, factual, UK spelling, no hype.
+- Retailer-neutral; no location or family references.
 
-2. META DESCRIPTION (140-160 characters):
-- Compelling single sentence
-- Include key benefit
-- Enticing but factual
-- No HTML tags
+CRITICAL: The first paragraph of long_html MUST be the meta description. Do NOT add category name to meta description.
+""".strip()
 
-3. LONG DESCRIPTION (300-500 words, HTML format):
-- Comprehensive overview in multiple paragraphs
-- Detailed features and benefits
-- Technical specifications naturally integrated
-- Use cases and applications
-- Build desire while remaining informative
-- Use <p> tags for paragraphs
 
-Return ONLY a JSON object with this exact structure:
-{{
-  "shortDescription": "<p>...</p>",
-  "metaDescription": "...",
-  "longDescription": "<p>...</p><p>...</p>"
-}}
+def initialize_client():
+    """Initialize OpenAI client with API key"""
+    global client
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        logger.warning("OPENAI_API_KEY not set - brand voice generation will fail")
+        return False
+    client = AsyncOpenAI(api_key=api_key)
+    return True
 
-IMPORTANT:
-- Keep HTML simple (only <p> and <br> tags)
-- Make content compelling but accurate
-- Maintain consistent brand voice
-- Focus on benefits, not just features
-- Be specific, avoid generic language"""
 
-        return prompt
+async def generate(products: List[Dict[str, Any]], category: str) -> List[Dict[str, Any]]:
+    """
+    Generate brand voice descriptions for products with retry logic
+    Args:
+        products: List of normalized product dicts
+        category: Product category
+    Returns:
+        List of products with enhanced descriptions
+    """
+    # Ensure client is initialized
+    if client is None:
+        initialize_client()
 
-    async def generate_for_product(
-        self,
-        product: Dict[str, Any],
-        category: str
-    ) -> Dict[str, Any]:
-        """
-        Generate brand voice descriptions for a single product.
+    enhanced_products = []
 
-        Args:
-            product: Product dictionary
-            category: Product category
-
-        Returns:
-            Updated product with brand voice descriptions
-        """
-        if not self.client:
-            print("[BrandVoice] OpenAI not configured, skipping")
-            return product
-
+    for idx, product in enumerate(products):
         try:
-            prompt = self.build_prompt(product, category)
+            logger.info(f"Processing product {idx + 1}/{len(products)}: {product.get('name', 'Unknown')}")
+            enhanced = await generate_single_product(product, category)
+            enhanced_products.append(enhanced)
+        except Exception as e:
+            logger.error(f"Failed to process {product.get('name', 'Unknown')}: {e}")
+            # Return product with error marker
+            product["descriptions"] = {
+                "shortDescription": "<p>Processing error</p>",
+                "metaDescription": "Product description generation failed.",
+                "longDescription": "<p>Unable to generate description.</p>"
+            }
+            product["_generation_error"] = str(e)
+            enhanced_products.append(product)
 
-            print(f"[BrandVoice] Generating for: {product.get('name')}")
+    return enhanced_products
 
-            response = await self.client.chat.completions.create(
-                model=config.OPENAI_MODEL,
+
+async def generate_single_product(product: Dict[str, Any], category: str) -> Dict[str, Any]:
+    """
+    Generate description for single product with 3 retries
+    Args:
+        product: Normalized product dict
+        category: Product category
+    Returns:
+        Product with descriptions added
+    Raises:
+        Exception: After 3 failed retries
+    """
+    if client is None:
+        raise Exception("OpenAI client not initialized - check OPENAI_API_KEY")
+
+    # Filter specs to only allowed ones for this category
+    filtered_specs = filter_specifications(product.get("specifications", {}), category)
+    product["specifications"] = filtered_specs
+
+    # Build prompt
+    prompt = build_prompt(product, category)
+
+    # Try OpenAI with retries
+    last_error = None
+    for attempt in range(1, OPENAI_MAX_RETRIES + 1):
+        try:
+            logger.debug(f"OpenAI attempt {attempt}/{OPENAI_MAX_RETRIES} for {product.get('name')}")
+
+            response = await client.chat.completions.create(
+                model=OPENAI_MODEL,
                 messages=[
-                    {
-                        "role": "system",
-                        "content": "You are a professional product copywriter. Always return valid JSON."
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt}
                 ],
-                temperature=0.7,
-                max_tokens=1500,
+                temperature=0.4,
+                max_tokens=1200,
+                timeout=float(OPENAI_TIMEOUT)
             )
 
-            content = response.choices[0].message.content.strip()
+            content = response.choices[0].message.content
 
-            # Parse JSON response
-            # Remove markdown code blocks if present
-            if content.startswith("```"):
-                content = content.split("```")[1]
-                if content.startswith("json"):
-                    content = content[4:]
+            if not content:
+                raise Exception("OpenAI returned empty response")
 
-            descriptions = json.loads(content)
+            # Parse response
+            descriptions = parse_openai_response(content)
+
+            # Sanitize output
+            descriptions = sanitize_descriptions(descriptions, product.get("name", ""))
 
             # Update product
-            product["descriptions"] = {
-                "shortDescription": descriptions.get("shortDescription", ""),
-                "metaDescription": descriptions.get("metaDescription", ""),
-                "longDescription": descriptions.get("longDescription", ""),
-            }
-
-            print(f"[BrandVoice] ✅ Generated for: {product.get('name')}")
+            product["descriptions"] = descriptions
+            logger.info(f"Successfully generated descriptions for {product.get('name')}")
             return product
+
+        except OpenAIError as e:
+            last_error = e
+            logger.warning(f"OpenAI attempt {attempt}/{OPENAI_MAX_RETRIES} failed: {e}")
+
+            if attempt < OPENAI_MAX_RETRIES:
+                # Exponential backoff
+                wait_time = 2 ** attempt
+                logger.info(f"Waiting {wait_time}s before retry...")
+                await asyncio.sleep(wait_time)
+            else:
+                # Final attempt failed
+                raise Exception(f"OpenAI failed after {OPENAI_MAX_RETRIES} retries: {last_error}")
 
         except Exception as e:
-            print(f"[BrandVoice] Error generating for {product.get('name')}: {e}")
-            # Return product unchanged
-            return product
+            last_error = e
+            logger.error(f"Unexpected error in attempt {attempt}: {e}")
 
-    async def generate_for_products(
-        self,
-        products: List[Dict[str, Any]],
-        category: str
-    ) -> List[Dict[str, Any]]:
-        """
-        Generate brand voice for multiple products.
+            if attempt < OPENAI_MAX_RETRIES:
+                wait_time = 2 ** attempt
+                await asyncio.sleep(wait_time)
+            else:
+                raise Exception(f"Generation failed after {OPENAI_MAX_RETRIES} retries: {last_error}")
 
-        Args:
-            products: List of products
-            category: Product category
+    # Should not reach here, but just in case
+    raise Exception(f"Generation failed: {last_error}")
 
-        Returns:
-            Updated products list
-        """
-        print(f"[BrandVoice] Generating for {len(products)} products in category: {category}")
 
-        enhanced_products = []
-        for product in products:
-            enhanced = await self.generate_for_product(product, category)
-            enhanced_products.append(enhanced)
+def filter_specifications(specs: Dict[str, Any], category: str) -> Dict[str, Any]:
+    """
+    Filter specs to only allowed keys for category
+    Args:
+        specs: Product specifications dict
+        category: Product category
+    Returns:
+        Filtered specifications dict
+    """
+    # Get allowed specs for this category (with fallback to General)
+    allowed = ALLOWED_SPECS.get(category, ALLOWED_SPECS.get("General", set()))
 
-        return enhanced_products
+    # Filter to only allowed specs
+    filtered = {k: v for k, v in specs.items() if k in allowed}
 
-# Singleton instance
-brand_voice_generator = BrandVoiceGenerator()
+    logger.debug(f"Filtered specs for {category}: kept {len(filtered)}/{len(specs)} specs")
+
+    return filtered
+
+
+def build_prompt(product: Dict[str, Any], category: str) -> str:
+    """
+    Build OpenAI prompt from product data
+    Args:
+        product: Product dict
+        category: Product category
+    Returns:
+        Formatted prompt string
+    """
+    # Create clean product data for prompt
+    prompt_data = {
+        "name": product.get("name", ""),
+        "category": category,
+    }
+
+    # Add optional fields if present
+    optional_fields = [
+        "sku", "brand", "range", "collection", "colour", "pattern",
+        "style", "finish", "usage", "audience"
+    ]
+
+    for field in optional_fields:
+        if product.get(field):
+            prompt_data[field] = product[field]
+
+    # Add lists if present
+    if product.get("features"):
+        prompt_data["features"] = product["features"]
+
+    if product.get("benefits"):
+        prompt_data["benefits"] = product["benefits"]
+
+    # Add specifications (already filtered)
+    if product.get("specifications"):
+        prompt_data["specifications"] = product["specifications"]
+
+    # Add special flags
+    if product.get("isNonStick"):
+        prompt_data["isNonStick"] = True
+
+    # Build prompt
+    return f"Product data:\n{json.dumps(prompt_data, indent=2)}"
+
+
+def parse_openai_response(content: str) -> Dict[str, str]:
+    """
+    Parse OpenAI JSON response, handling markdown fences
+    Args:
+        content: Raw OpenAI response content
+    Returns:
+        Dict with shortDescription, metaDescription, longDescription
+    Raises:
+        Exception: If parsing fails
+    """
+    try:
+        # Strip markdown code blocks
+        content = content.strip()
+
+        # Remove markdown json fences if present
+        if content.startswith("```json"):
+            content = content[7:]
+        elif content.startswith("```"):
+            content = content[3:]
+
+        if content.endswith("```"):
+            content = content[:-3]
+
+        content = content.strip()
+
+        # Parse JSON
+        data = json.loads(content)
+
+        # Extract descriptions
+        short_html = data.get("short_html", "")
+        long_html = data.get("long_html", "")
+
+        if not short_html or not long_html:
+            raise Exception("Missing short_html or long_html in response")
+
+        # Extract meta description from first paragraph of long_html
+        meta = extract_meta_from_long_html(long_html)
+
+        return {
+            "shortDescription": short_html,
+            "metaDescription": meta,
+            "longDescription": long_html
+        }
+
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse OpenAI JSON: {e}\nContent: {content}")
+        raise Exception(f"Invalid JSON from OpenAI: {e}")
+
+    except Exception as e:
+        logger.error(f"Failed to parse OpenAI response: {e}")
+        raise
+
+
+def extract_meta_from_long_html(long_html: str) -> str:
+    """
+    Extract first paragraph as meta description
+    Args:
+        long_html: Long description HTML
+    Returns:
+        Meta description string (150-160 chars)
+    """
+    # Extract first <p> tag content
+    match = re.search(r'<p>(.*?)</p>', long_html, re.DOTALL)
+
+    if match:
+        meta = match.group(1).strip()
+
+        # Remove any inner HTML tags
+        meta = re.sub(r'<[^>]+>', '', meta)
+
+        # Clamp to 160 chars
+        if len(meta) > 160:
+            # Try to cut at sentence boundary
+            if '.' in meta[:160]:
+                last_period = meta[:160].rfind('.')
+                meta = meta[:last_period + 1]
+            else:
+                meta = meta[:157] + "..."
+
+        return meta
+
+    # Fallback: extract plain text from start
+    plain = re.sub(r'<[^>]+>', '', long_html)
+    plain = plain.strip()
+
+    if len(plain) > 160:
+        plain = plain[:157] + "..."
+
+    return plain
+
+
+def sanitize_descriptions(descriptions: Dict[str, str], product_name: str) -> Dict[str, str]:
+    """
+    Remove forbidden phrases and validate
+    Args:
+        descriptions: Dict with description fields
+        product_name: Product name for logging
+    Returns:
+        Sanitized descriptions dict
+    """
+    for key in ["shortDescription", "metaDescription", "longDescription"]:
+        if key in descriptions:
+            # Strip forbidden phrases
+            descriptions[key] = strip_forbidden_phrases(descriptions[key])
+
+            # Sanitize HTML
+            descriptions[key] = sanitize_html(descriptions[key])
+
+    # Validate lengths
+    if len(descriptions.get("shortDescription", "")) > 150:
+        logger.warning(f"Short description too long for {product_name}: {len(descriptions['shortDescription'])} chars")
+
+    if len(descriptions.get("longDescription", "")) > 2000:
+        logger.warning(f"Long description too long for {product_name}: {len(descriptions['longDescription'])} chars")
+
+    return descriptions
+
+
+# Initialize client on module import
+initialize_client()
