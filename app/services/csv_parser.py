@@ -77,19 +77,21 @@ def parse_csv_row(row: Dict[str, str], category: str) -> Dict[str, Any]:
         Product dictionary or None if row is invalid
     """
     # Get product name (required)
-name = (
-    row.get('name') or
-    row.get('Name') or
-    row.get('product_name') or
-    row.get('Product Name') or
-    row.get('Product Title') or
-    row.get('title') or
-    row.get('Title') or
-    row.get('Description') or
-    row.get('description') or
-    row.get('Short Description') or
-    row.get('short_description')
-)
+# Get product name (required) - try many variations
+    name = (
+        row.get('name') or
+        row.get('Name') or
+        row.get('product_name') or
+        row.get('Product Name') or
+        row.get('Product Title') or
+        row.get('title') or
+        row.get('Title') or
+        row.get('Description') or
+        row.get('description') or
+        row.get('Short Description') or
+        row.get('short_description') or
+        row.get('Code')  # Also try Code field
+    )
 
     if not name or not name.strip():
         return None
