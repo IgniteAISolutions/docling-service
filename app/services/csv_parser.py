@@ -77,7 +77,6 @@ def parse_csv_row(row: Dict[str, str], category: str) -> Dict[str, Any]:
         Product dictionary or None if row is invalid
     """
     # Get product name (required)
-# Get product name (required) - try many variations
     name = (
         row.get('name') or
         row.get('Name') or
