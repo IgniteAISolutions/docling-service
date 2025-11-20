@@ -230,17 +230,24 @@ async function processURL(url: string, category: Category, onProgress: (msg: str
   console.log('[URL] Starting scraping...');
   onProgress('Fetching website...');
 
-  const result = await postJson('scrape-url', { url, category });
-  const products = normaliseExtractResponse(result);
+  try {
+    const result = await postJson('scrape-url', { url, category });
+    const products = normaliseExtractResponse(result);
 
-  if (!products || products.length === 0) {
-    throw new Error('No products found at URL');
+    if (!products || products.length === 0) {
+      throw new Error('No products found at URL');
+    }
+
+    onProgress(`Successfully scraped ${products.length} products!`);
+    return products;
+  } catch (error: any) {
+    // If it's a 403/blocking error, give helpful message
+    if (error.message && error.message.includes('blocking')) {
+      throw new Error('⚠️ This website blocked our scraper.\n\nPlease:\n1. Copy the product details from the website\n2. Switch to the "Free Text" tab\n3. Paste the information there');
+    }
+    throw error;
   }
-
-  onProgress(`Successfully scraped ${products.length} products!`);
-  return products;
 }
-
 async function processFreeText(text: string, category: Category, onProgress: (msg: string) => void): Promise<Product[]> {
   console.log('[FreeText] Starting...');
   onProgress('Processing text...');
