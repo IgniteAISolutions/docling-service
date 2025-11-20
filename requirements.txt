@@ -47,3 +47,6 @@ pytest-asyncio==0.23.3
 black==23.12.1
 flake8==7.0.0
 mypy==1.8.0
+
+# PDF Processing with Docling
+docling @ git+https://github.com/IgniteAISolutions/docling-PDF.git@main
