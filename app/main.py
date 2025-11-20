@@ -126,9 +126,10 @@ async def parse_csv_endpoint(
 async def parse_image_endpoint(
     file: UploadFile = File(...),
     category: str = Form(...),
+    additional_text: str = Form(default=""),
     x_api_key: Optional[str] = Header(default=None, alias="x-api-key"),
 ):
-    """Parse image via OCR and generate brand voice"""
+    """Parse image via AI Vision and generate brand voice"""
     check_key(x_api_key)
     
     try:
@@ -141,7 +142,12 @@ async def parse_image_endpoint(
             raise HTTPException(status_code=503, detail="Image processor not available")
         
         file_content = await file.read()
-        products = await image_processor.process(file_content, category, file.filename)
+        products = await image_processor.process(
+            file_content, 
+            category, 
+            file.filename,
+            additional_context=additional_text
+        )
         
         if brand_voice:
             try:
