@@ -1,30 +1,32 @@
 """
 Image Processor Service
-OCR processing for product images using pytesseract
+AI Vision processing for product images using OpenAI GPT-4 Vision
 """
 import io
+import base64
 import logging
-import re
+import os
 from typing import List, Dict, Any
 from PIL import Image
-import pytesseract
+import httpx
 
 from ..config import MAX_IMAGE_SIZE_MB, SUPPORTED_IMAGE_FORMATS
 
 logger = logging.getLogger(__name__)
 
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
-async def process(file_content: bytes, category: str, filename: str = "") -> List[Dict[str, Any]]:
+
+async def process(file_content: bytes, category: str, filename: str = "", additional_context: str = "") -> List[Dict[str, Any]]:
     """
-    Process image file and extract product data via OCR
+    Process image file using AI vision to identify product and generate descriptions
     Args:
         file_content: Image file content as bytes
         category: Product category
         filename: Original filename
+        additional_context: Additional text context from user
     Returns:
         List of product dictionaries
-    Raises:
-        ValueError: If image is invalid or too large
     """
     # Validate file size
     size_mb = len(file_content) / (1024 * 1024)
@@ -38,264 +40,144 @@ async def process(file_content: bytes, category: str, filename: str = "") -> Lis
             raise ValueError(f"Unsupported image format: {ext}")
 
     try:
-        # Load image
+        # Load and validate image
         image = Image.open(io.BytesIO(file_content))
+        
+        # Convert to RGB if needed
+        if image.mode not in ('RGB', 'RGBA'):
+            image = image.convert('RGB')
+        
+        # Resize if too large (OpenAI has limits)
+        max_dimension = 2048
+        if max(image.size) > max_dimension:
+            ratio = max_dimension / max(image.size)
+            new_size = tuple(int(dim * ratio) for dim in image.size)
+            image = image.resize(new_size, Image.Resampling.LANCZOS)
+        
+        # Convert to base64
+        buffer = io.BytesIO()
+        image.save(buffer, format='JPEG', quality=85)
+        image_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
 
-        # Perform OCR
-        logger.info(f"Performing OCR on image: {filename or 'unknown'}")
-        text = pytesseract.image_to_string(image)
+        # Call OpenAI Vision API
+        logger.info(f"Analyzing image with AI vision: {filename or 'unknown'}")
+        product_data = await analyze_image_with_ai(image_base64, category, additional_context)
 
-        if not text or len(text.strip()) < 10:
-            raise ValueError("No text extracted from image")
-
-        logger.info(f"Extracted {len(text)} characters from image")
-
-        # Parse text into product data
-        products = parse_ocr_text(text, category)
-
-        return products
+        return [product_data]
 
     except Exception as e:
         logger.error(f"Failed to process image: {e}")
         raise ValueError(f"Image processing failed: {e}")
 
 
-def parse_ocr_text(text: str, category: str) -> List[Dict[str, Any]]:
+async def analyze_image_with_ai(image_base64: str, category: str, additional_context: str) -> Dict[str, Any]:
     """
-    Parse OCR text into product data
+    Use OpenAI GPT-4 Vision to analyze product image
     Args:
-        text: Extracted OCR text
+        image_base64: Base64 encoded image
         category: Product category
+        additional_context: Additional context from user
     Returns:
-        List of product dictionaries
+        Product dictionary with AI-generated content
     """
-    # Clean up text
-    text = text.strip()
+    if not OPENAI_API_KEY:
+        raise ValueError("OPENAI_API_KEY not configured")
 
-    # Try to extract structured data
-    product = {
-        "name": extract_product_name(text),
-        "category": category,
-        "sku": extract_sku(text),
-        "barcode": extract_barcode(text),
-        "brand": extract_brand(text),
-        "features": extract_features(text),
-        "specifications": extract_specifications_from_text(text)
-    }
+    # Build prompt
+    context_text = f"\n\nAdditional context: {additional_context}" if additional_context else ""
+    
+    prompt = f"""You are analyzing a product image for an e-commerce catalog in the "{category}" category.{context_text}
 
-    # Ensure we have at least a name
-    if not product["name"]:
-        # Use first line as name
-        lines = [line.strip() for line in text.split('\n') if line.strip()]
-        if lines:
-            product["name"] = lines[0][:100]  # Max 100 chars
-        else:
-            product["name"] = "Product from image"
+Please analyze this image and provide:
+1. Product name (concise, descriptive)
+2. Brand (if visible)
+3. Key features (5-10 bullet points)
+4. Short description (2-3 sentences, benefit-focused, UK English)
+5. Meta description (under 160 characters, UK English)
+6. Long description (detailed, benefit-led, UK English, 3-5 paragraphs)
 
-    return [product]
+Important:
+- Use UK English spelling (colour, favourite, etc.)
+- Use sentence case (not ALL CAPS)
+- Focus on benefits to the customer
+- Be specific about what's visible in the image
+- If you can see any text/labels, include that information
 
+Return your response in this exact JSON format:
+{{
+  "name": "product name",
+  "brand": "brand name or empty string",
+  "features": ["feature 1", "feature 2", ...],
+  "shortDescription": "short description",
+  "metaDescription": "meta description",
+  "longDescription": "long description"
+}}"""
 
-def extract_product_name(text: str) -> str:
-    """
-    Extract product name from OCR text
-    Args:
-        text: OCR text
-    Returns:
-        Product name or empty string
-    """
-    # Look for common patterns
-    patterns = [
-        r'Product Name:\s*(.+?)(?:\n|$)',
-        r'Name:\s*(.+?)(?:\n|$)',
-        r'Title:\s*(.+?)(?:\n|$)',
-    ]
-
-    for pattern in patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            return match.group(1).strip()
-
-    # Fallback: use first substantial line
-    lines = [line.strip() for line in text.split('\n') if line.strip()]
-    for line in lines:
-        # Skip short lines and lines with only numbers
-        if len(line) > 10 and not line.replace(' ', '').isdigit():
-            return line[:100]  # Max 100 chars
-
-    return ""
-
-
-def extract_sku(text: str) -> str:
-    """
-    Extract SKU from OCR text
-    Args:
-        text: OCR text
-    Returns:
-        SKU or empty string
-    """
-    patterns = [
-        r'SKU:\s*([A-Z0-9-]+)',
-        r'Product Code:\s*([A-Z0-9-]+)',
-        r'Item Code:\s*([A-Z0-9-]+)',
-        r'Code:\s*([A-Z0-9-]+)',
-    ]
-
-    for pattern in patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            return match.group(1).strip()
-
-    return ""
-
-
-def extract_barcode(text: str) -> str:
-    """
-    Extract barcode/EAN from OCR text
-    Args:
-        text: OCR text
-    Returns:
-        Barcode or empty string
-    """
-    patterns = [
-        r'EAN:\s*(\d{13})',
-        r'Barcode:\s*(\d{8,14})',
-        r'UPC:\s*(\d{12})',
-        r'GTIN:\s*(\d{8,14})',
-        r'\b(\d{13})\b',  # Standalone 13-digit number
-    ]
-
-    for pattern in patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            barcode = match.group(1).strip()
-            # Validate it's actually a barcode (8-14 digits)
-            if 8 <= len(barcode) <= 14 and barcode.isdigit():
-                return barcode
-
-    return ""
-
-
-def extract_brand(text: str) -> str:
-    """
-    Extract brand from OCR text
-    Args:
-        text: OCR text
-    Returns:
-        Brand or empty string
-    """
-    patterns = [
-        r'Brand:\s*(.+?)(?:\n|$)',
-        r'Manufacturer:\s*(.+?)(?:\n|$)',
-        r'Make:\s*(.+?)(?:\n|$)',
-    ]
-
-    for pattern in patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            return match.group(1).strip()
-
-    return ""
-
-
-def extract_features(text: str) -> List[str]:
-    """
-    Extract features from OCR text
-    Args:
-        text: OCR text
-    Returns:
-        List of features
-    """
-    features = []
-
-    # Look for bulleted lists
-    bullet_patterns = [
-        r'[•●○]\s*(.+?)(?:\n|$)',
-        r'[-–—]\s*(.+?)(?:\n|$)',
-        r'\*\s*(.+?)(?:\n|$)',
-    ]
-
-    for pattern in bullet_patterns:
-        matches = re.findall(pattern, text, re.IGNORECASE)
-        if matches:
-            features.extend([m.strip() for m in matches if len(m.strip()) > 5])
-
-    # Look for "Features:" section
-    features_section = re.search(r'Features?:(.+?)(?:\n\n|$)', text, re.IGNORECASE | re.DOTALL)
-    if features_section:
-        section_text = features_section.group(1)
-        # Extract lines
-        lines = [line.strip() for line in section_text.split('\n') if line.strip()]
-        features.extend([line for line in lines if len(line) > 5])
-
-    # Deduplicate
-    seen = set()
-    unique_features = []
-    for feature in features:
-        if feature.lower() not in seen:
-            seen.add(feature.lower())
-            unique_features.append(feature)
-
-    return unique_features[:10]  # Max 10 features
-
-
-def extract_specifications_from_text(text: str) -> Dict[str, Any]:
-    """
-    Extract specifications from OCR text
-    Args:
-        text: OCR text
-    Returns:
-        Specifications dictionary
-    """
-    specs = {}
-
-    # Common specification patterns
-    spec_patterns = {
-        'material': [
-            r'Material:\s*(.+?)(?:\n|$)',
-            r'Made from:\s*(.+?)(?:\n|$)',
-        ],
-        'dimensions': [
-            r'Dimensions:\s*(.+?)(?:\n|$)',
-            r'Size:\s*(.+?)(?:\n|$)',
-            r'(\d+\.?\d*\s*x\s*\d+\.?\d*\s*x\s*\d+\.?\d*\s*cm)',
-        ],
-        'weight': [
-            r'Weight:\s*(.+?)(?:\n|$)',
-            r'(\d+\.?\d*\s*kg)',
-            r'(\d+\.?\d*\s*g)',
-        ],
-        'capacity': [
-            r'Capacity:\s*(.+?)(?:\n|$)',
-            r'Volume:\s*(.+?)(?:\n|$)',
-            r'(\d+\.?\d*\s*litre)',
-            r'(\d+\.?\d*\s*ml)',
-        ],
-        'powerW': [
-            r'Power:\s*(\d+)\s*W',
-            r'Wattage:\s*(\d+)',
-            r'(\d+)\s*watts?',
-        ],
-        'origin': [
-            r'Made in:\s*(.+?)(?:\n|$)',
-            r'Origin:\s*(.+?)(?:\n|$)',
-            r'Country:\s*(.+?)(?:\n|$)',
-        ],
-        'guarantee': [
-            r'Guarantee:\s*(.+?)(?:\n|$)',
-            r'Warranty:\s*(.+?)(?:\n|$)',
-            r'(\d+\s*year\s+guarantee)',
-        ],
-        'care': [
-            r'Care:\s*(.+?)(?:\n|$)',
-            r'Cleaning:\s*(.+?)(?:\n|$)',
-        ],
-    }
-
-    for spec_key, patterns in spec_patterns.items():
-        for pattern in patterns:
-            match = re.search(pattern, text, re.IGNORECASE)
-            if match:
-                specs[spec_key] = match.group(1).strip()
-                break
-
-    return specs
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {OPENAI_API_KEY}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": "gpt-4o",
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": prompt
+                                },
+                                {
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": f"data:image/jpeg;base64,{image_base64}"
+                                    }
+                                }
+                            ]
+                        }
+                    ],
+                    "max_tokens": 1500,
+                    "temperature": 0.7
+                }
+            )
+            
+            if not response.is_success:
+                raise ValueError(f"OpenAI API error: {response.status_code}")
+            
+            result = response.json()
+            content = result["choices"][0]["message"]["content"]
+            
+            # Parse JSON response
+            import json
+            # Extract JSON from markdown code blocks if present
+            if "```json" in content:
+                content = content.split("```json")[1].split("```")[0].strip()
+            elif "```" in content:
+                content = content.split("```")[1].split("```")[0].strip()
+            
+            data = json.loads(content)
+            
+            # Build product object
+            product = {
+                "name": data.get("name", "Product from image"),
+                "brand": data.get("brand", ""),
+                "sku": "",  # Not visible in image
+                "category": category,
+                "features": data.get("features", []),
+                "specifications": {},
+                "descriptions": {
+                    "shortDescription": data.get("shortDescription", ""),
+                    "metaDescription": data.get("metaDescription", ""),
+                    "longDescription": data.get("longDescription", "")
+                }
+            }
+            
+            return product
+            
+    except Exception as e:
+        logger.error(f"AI vision analysis failed: {e}")
+        raise ValueError(f"AI analysis failed: {e}")
