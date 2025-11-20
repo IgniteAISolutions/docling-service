@@ -237,6 +237,62 @@ async def get_categories():
     """Get list of allowed categories"""
     return {"categories": sorted(list(ALLOWED_CATEGORIES))}
 
+@app.post("/api/extract-pdf-products")
+async def extract_pdf_products_endpoint(
+    file: UploadFile = File(...),
+    category: str = Form(default="Electricals"),
+    x_api_key: Optional[str] = Header(default=None, alias="x-api-key"),
+):
+    """Extract products from PDF using Docling"""
+    check_key(x_api_key)
+    
+    try:
+        if category not in ALLOWED_CATEGORIES:
+            raise HTTPException(status_code=400, detail="Invalid category")
+        
+        logger.info(f"📄 Processing PDF for category: {category}")
+        
+        # Save uploaded file temporarily
+        import tempfile
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+            content = await file.read()
+            tmp.write(content)
+            tmp_path = tmp.name
+        
+        try:
+            from docling.document_converter import DocumentConverter
+            
+            converter = DocumentConverter()
+            result = converter.convert(tmp_path)
+            markdown = result.document.export_to_markdown()
+            
+            # Extract product info from markdown
+            products = [{
+                "name": "Product from PDF",
+                "brand": "",
+                "sku": "",
+                "category": category,
+                "rawExtractedContent": markdown,
+                "descriptions": {
+                    "shortDescription": markdown[:200],
+                    "metaDescription": markdown[:160],
+                    "longDescription": markdown
+                }
+            }]
+            
+            # Generate brand voice
+            if brand_voice:
+                products = await brand_voice.generate(products, category)
+            
+            return ProcessingResponse(success=True, products=products)
+            
+        finally:
+            import os
+            os.unlink(tmp_path)
+            
+    except Exception as e:
+        logger.error(f"PDF error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 # ============================================================
 # SERVE REACT FRONTEND
 # ============================================================
