@@ -38,12 +38,6 @@ const CATEGORY_OPTIONS: readonly Category[] = [
   'Food Prep & Tools',
 ] as const;
 
-const runtimeEnv: Record<string, any> =
-  (typeof process !== 'undefined' && (process as any).env) ||
-  (typeof window !== 'undefined' && (window as any).__ENV) ||
-  {};
-
-// Replace lines 38-51 with this:
 const API_BASE = 
   process.env.REACT_APP_API_BASE ||
   (process.env.REACT_APP_BACKEND_URL ? process.env.REACT_APP_BACKEND_URL + '/api' : '') ||
@@ -51,7 +45,27 @@ const API_BASE =
 
 console.log('FastAPI Backend URL:', API_BASE);
 
-// Replace the entire postJson function (lines 73-100) with this:
+const BORDER_THIN = '1px solid #ddd';
+const INPUT_BASE = {
+  width: '100%',
+  padding: '10px',
+  border: BORDER_THIN,
+  borderRadius: '6px',
+  fontSize: '1rem',
+} as const;
+
+const toMessage = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+const stripHtml = (html: string) => (html || '').replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+
+function normaliseExtractResponse(json: any): any[] {
+  if (!json) return [];
+  if (Array.isArray(json?.products)) return json.products;
+  if (Array.isArray(json?.data?.products)) return json.data.products;
+  if (Array.isArray(json?.data)) return json.data;
+  return [];
+}
+
 async function postJson(path: string, body: any, timeoutMs: number = 120000) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
@@ -87,7 +101,6 @@ async function postJson(path: string, body: any, timeoutMs: number = 120000) {
   }
 }
 
-// Replace the entire postForm function (lines 102-130) with this:
 async function postForm(path: string, form: FormData, timeoutMs: number = 600000) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
