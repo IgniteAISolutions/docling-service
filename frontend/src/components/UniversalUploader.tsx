@@ -189,27 +189,20 @@ async function processCSV(file: File, category: Category, onProgress: (msg: stri
 }
 
 async function processImage(file: File, category: Category, additionalText: string, onProgress: (msg: string) => void): Promise<Product[]> {
-  console.log('[Image] Starting OCR...');
+  console.log('[Image] Starting AI Vision...');
   onProgress('Uploading image...');
 
   const formData = new FormData();
   formData.append('file', file, file.name);
   formData.append('category', category);
+  formData.append('additional_text', additionalText);  // Add this line
 
-  onProgress('Performing OCR...');
+  onProgress('Analyzing image with AI...');
   const result = await postForm('parse-image', formData, 120000);
   const products = normaliseExtractResponse(result);
 
   if (!products || products.length === 0) {
     throw new Error('No product info detected in image.');
-  }
-
-  if (additionalText.trim()) {
-    products.forEach(p => {
-      if (p.descriptions) {
-        p.descriptions.longDescription = `${p.descriptions.longDescription}\n\n${additionalText}`;
-      }
-    });
   }
 
   onProgress(`Successfully extracted ${products.length} products!`);
