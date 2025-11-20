@@ -121,36 +121,6 @@ async function postForm(path: string, form: FormData, timeoutMs: number = 600000
     throw error;
   }
 }
-async function postForm(path: string, form: FormData, timeoutMs: number = 600000) {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-
-  try {
-    const res = await fetch(`${API_BASE}/${path}`, {
-      method: 'POST',
-      body: form,
-      signal: controller.signal,
-    });
-
-    clearTimeout(timeoutId);
-    const text = await res.text();
-    console.log(`[${path}] Response:`, { status: res.status, text: text.substring(0, 200) });
-
-    let json: any = null;
-    try { json = JSON.parse(text); } catch {}
-
-    if (!res.ok) {
-      throw new Error(json?.error || json?.detail || `${path} failed ${res.status}`);
-    }
-    return json;
-  } catch (error: any) {
-    clearTimeout(timeoutId);
-    if (error.name === 'AbortError') {
-      throw new Error('Request timed out. Large files may take up to 10 minutes.');
-    }
-    throw error;
-  }
-}
 
 async function processPDF(file: File, category: Category, onProgress: (msg: string) => void): Promise<Product[]> {
   console.log('[PDF] Starting...');
