@@ -44,9 +44,9 @@ const runtimeEnv: Record<string, any> =
   {};
 
 const API_BASE = 
-  (runtimeEnv.REACT_APP_API_BASE as string) ||
-  (runtimeEnv.VITE_API_BASE as string) ||
-  'http://49.13.7.121:8080/api';
+  process.env.REACT_APP_API_BASE ||
+  process.env.REACT_APP_BACKEND_URL + '/api' ||
+  'https://docling-service-u53318.vm.elestio.app/api';
 
 console.log('FastAPI Backend URL:', API_BASE);
 
