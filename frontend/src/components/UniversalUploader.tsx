@@ -43,34 +43,15 @@ const runtimeEnv: Record<string, any> =
   (typeof window !== 'undefined' && (window as any).__ENV) ||
   {};
 
+// Replace lines 38-51 with this:
 const API_BASE = 
   process.env.REACT_APP_API_BASE ||
-  process.env.REACT_APP_BACKEND_URL + '/api' ||
+  (process.env.REACT_APP_BACKEND_URL ? process.env.REACT_APP_BACKEND_URL + '/api' : '') ||
   'https://docling-service-u53318.vm.elestio.app/api';
 
 console.log('FastAPI Backend URL:', API_BASE);
 
-const BORDER_THIN = '1px solid #ddd';
-const INPUT_BASE = {
-  width: '100%',
-  padding: '10px',
-  border: BORDER_THIN,
-  borderRadius: '6px',
-  fontSize: '1rem',
-} as const;
-
-const toMessage = (e: unknown) => (e instanceof Error ? e.message : String(e));
-
-const stripHtml = (html: string) => (html || '').replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
-
-function normaliseExtractResponse(json: any): any[] {
-  if (!json) return [];
-  if (Array.isArray(json?.products)) return json.products;
-  if (Array.isArray(json?.data?.products)) return json.data.products;
-  if (Array.isArray(json?.data)) return json.data;
-  return [];
-}
-
+// Replace the entire postJson function (lines 73-100) with this:
 async function postJson(path: string, body: any, timeoutMs: number = 120000) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
@@ -78,7 +59,10 @@ async function postJson(path: string, body: any, timeoutMs: number = 120000) {
   try {
     const res = await fetch(`${API_BASE}/${path}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.REACT_APP_DOCLING_API_KEY || '',
+      },
       body: JSON.stringify(body),
       signal: controller.signal,
     });
@@ -103,6 +87,40 @@ async function postJson(path: string, body: any, timeoutMs: number = 120000) {
   }
 }
 
+// Replace the entire postForm function (lines 102-130) with this:
+async function postForm(path: string, form: FormData, timeoutMs: number = 600000) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const res = await fetch(`${API_BASE}/${path}`, {
+      method: 'POST',
+      headers: {
+        'x-api-key': process.env.REACT_APP_DOCLING_API_KEY || '',
+      },
+      body: form,
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+    const text = await res.text();
+    console.log(`[${path}] Response:`, { status: res.status, text: text.substring(0, 200) });
+
+    let json: any = null;
+    try { json = JSON.parse(text); } catch {}
+
+    if (!res.ok) {
+      throw new Error(json?.error || json?.detail || `${path} failed ${res.status}`);
+    }
+    return json;
+  } catch (error: any) {
+    clearTimeout(timeoutId);
+    if (error.name === 'AbortError') {
+      throw new Error('Request timed out. Large files may take up to 10 minutes.');
+    }
+    throw error;
+  }
+}
 async function postForm(path: string, form: FormData, timeoutMs: number = 600000) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
