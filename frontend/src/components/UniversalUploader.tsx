@@ -598,18 +598,32 @@ const UniversalUploader: React.FC = () => {
   </>
 )}
 
-      {step === 'processing' && (
-        <div style={{ textAlign: 'center', padding: '3rem' }}>
-          <div style={{ fontSize: '3rem', marginBottom: '1rem', animation: 'spin 2s linear infinite' }}>⏳</div>
-          <p style={{ fontSize: '1.1rem', color: '#2c3e50', fontWeight: 500, marginBottom: '0.5rem' }}>{statusMsg}</p>
-          <p style={{ fontSize: '0.9rem', color: '#7f8c8d' }}>
-            {activeTab === 'pdf-catalogue' ? 'Please wait, this may take 3–7 minutes for large PDFs...' : 'Please wait, this may take 1–2 minutes...'}
-          </p>
-          <style>{`@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }`}</style>
-        </div>
+     {!isFileTab && activeTab !== 'manual-codes' && (
+  <>
+    <textarea 
+      value={textInput} 
+      onChange={(e) => setTextInput(e.target.value)} 
+      placeholder={activeTab === 'website-url' ? 'Enter product URL\nExample: http://example.com/product/12345' : 'Enter product description or details...'} 
+      rows={8} 
+      style={{ ...INPUT_BASE, resize: 'vertical' }} 
+    />
+    {activeTab === 'website-url' && (
+      <p style={{ fontSize: '0.85rem', color: '#e67e22', marginTop: '0.5rem', lineHeight: '1.4' }}>
+        ⚠️ <strong>Note:</strong> Some websites block automated scraping for security. 
+        If scraping fails, please use the <strong>Free Text</strong> tab to paste product details manually.
+      </p>
+    )}
+  </>
+)}
+          </div>
+
+          <button onClick={handleProcess} disabled={!canProcess} style={{ marginTop: '1.5rem', padding: '12px 32px', border: 'none', borderRadius: '6px', background: canProcess ? '#27ae60' : '#bdc3c7', color: '#fff', cursor: canProcess ? 'pointer' : 'not-allowed', fontSize: '1rem', fontWeight: 600, transition: 'all 0.2s ease' }}>
+            Process
+          </button>
+        </>
       )}
 
-      {step === 'complete' && (
+      {step === 'processing' && (
         <>
           <div style={{ marginBottom: '1.5rem', display: 'flex', gap: '1rem' }}>
             <button onClick={handleExport} disabled={!editingProducts.length} style={{ background: '#2c3e50', color: 'white', border: 'none', padding: '10px 16px', borderRadius: '6px', cursor: editingProducts.length ? 'pointer' : 'not-allowed', fontWeight: 600 }}>
