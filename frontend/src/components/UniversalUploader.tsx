@@ -411,6 +411,35 @@ const UniversalUploader: React.FC = () => {
     );
   };
 
+  const regenerateProduct = async (id: string) => {
+    const product = editingProducts.find(p => p.id === id);
+    if (!product || !product.category) {
+      alert('Please select a category first');
+      return;
+    }
+
+    try {
+      setStatusMsg(`Regenerating product ${product.name || product.sku}...`);
+      
+      const bv = await postJson('generate-brand-voice', { 
+        products: [product], 
+        category: product.category 
+      }, 120000);
+      
+      const voiced = Array.isArray(bv?.products) ? bv.products[0] : null;
+      
+      if (voiced) {
+        setEditingProducts(prev => 
+          prev.map(p => p.id === id ? { ...voiced, id } : p)
+        );
+        setStatusMsg('Product regenerated successfully!');
+        setTimeout(() => setStatusMsg(''), 3000);
+      }
+    } catch (err) {
+      alert(`Regeneration failed: ${toMessage(err)}`);
+    }
+  };
+  
   const tabs: { key: Tab; label: string; icon: string }[] = [
     { key: 'pdf-catalogue', label: 'PDF Catalogue', icon: '📄' },
     { key: 'csv', label: 'CSV Upload', icon: '📊' },
@@ -598,7 +627,25 @@ const UniversalUploader: React.FC = () => {
                   <label style={{ fontWeight: 500, display: 'block', marginBottom: '4px' }}>SKU:</label>
                   <input type="text" value={product.sku} onChange={(e) => updateProductSKU(product.id, e.target.value)} style={{ ...INPUT_BASE }} />
                 </div>
-                <CategorySelect id={`category-${product.id}`} value={product.category} onChange={(val) => updateProductCategory(product.id, val)} />
+                <div>
+                  <CategorySelect id={`category-${product.id}`} value={product.category} onChange={(val) => updateProductCategory(product.id, val)} />
+                  <button 
+                    onClick={() => regenerateProduct(product.id)} 
+                    style={{ 
+                      marginTop: '0.5rem',
+                      padding: '8px 16px', 
+                      background: '#3498db', 
+                      color: 'white', 
+                      border: 'none', 
+                      borderRadius: '4px', 
+                      cursor: 'pointer', 
+                      fontWeight: 600,
+                      fontSize: '0.9rem'
+                    }}
+                  >
+                    🔄 Regenerate with Category
+                  </button>
+                </div>
                 <div>
                   <label style={{ fontWeight: 500, display: 'block', marginBottom: '4px' }}>Short Description:</label>
                   <textarea value={product.descriptions?.shortDescription || ''} onChange={(e) => updateProductDescription(product.id, 'shortDescription', e.target.value)} rows={3} style={{ ...INPUT_BASE, resize: 'vertical' }} />
