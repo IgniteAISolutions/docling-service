@@ -1,84 +1,138 @@
 """
 URL Scraper Service
-Scrapes product data from website URLs
+Scrape product information from URLs
 """
 import logging
-import re
 from typing import List, Dict, Any
-from urllib.parse import urlparse
 import httpx
 from bs4 import BeautifulSoup
 
-from ..config import URL_SCRAPE_TIMEOUT, URL_USER_AGENT
-
 logger = logging.getLogger(__name__)
 
+# Browser-like headers to avoid 403 errors
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+    'Accept-Language': 'en-GB,en;q=0.9',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Connection': 'keep-alive',
+    'Upgrade-Insecure-Requests': '1',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'none',
+}
 
 async def scrape(url: str, category: str) -> List[Dict[str, Any]]:
     """
     Scrape product data from URL
-    Args:
-        url: URL to scrape
-        category: Product category
-    Returns:
-        List of product dictionaries
-    Raises:
-        ValueError: If scraping fails
     """
-    # Validate URL
-    if not is_valid_url(url):
-        raise ValueError(f"Invalid URL: {url}")
-
-    logger.info(f"Scraping URL: {url}")
-
     try:
-        # Fetch page
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                url,
-                headers={"User-Agent": URL_USER_AGENT},
-                timeout=URL_SCRAPE_TIMEOUT,
-                follow_redirects=True
-            )
-
+        logger.info(f"Scraping URL: {url}")
+        
+        async with httpx.AsyncClient(
+            timeout=30.0,
+            headers=HEADERS,
+            follow_redirects=True
+        ) as client:
+            response = await client.get(url)
             response.raise_for_status()
-            html = response.text
-
-        # Parse HTML
-        soup = BeautifulSoup(html, 'html.parser')
-
-        # Extract product data
-        product = extract_product_from_html(soup, url, category)
-
-        if not product.get("name"):
-            raise ValueError("Could not extract product name from page")
-
-        logger.info(f"Successfully scraped product: {product.get('name')}")
-
+        
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Extract product info
+        product = {
+            "name": extract_product_name(soup, url),
+            "brand": extract_brand(soup),
+            "sku": extract_sku(soup),
+            "category": category,
+            "descriptions": {
+                "shortDescription": extract_short_description(soup),
+                "metaDescription": extract_meta_description(soup),
+                "longDescription": extract_long_description(soup)
+            },
+            "features": extract_features(soup),
+            "specifications": extract_specifications(soup)
+        }
+        
         return [product]
-
-    except httpx.HTTPError as e:
-        logger.error(f"HTTP error scraping {url}: {e}")
-        raise ValueError(f"Failed to fetch URL: {e}")
-
+        
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 403:
+            raise ValueError(f"Access denied by website. The site {url} is blocking automated requests. Please try copying the product information manually.")
+        raise ValueError(f"Failed to fetch URL: {e.response.status_code}")
     except Exception as e:
-        logger.error(f"Error scraping {url}: {e}")
-        raise ValueError(f"Scraping failed: {e}")
+        logger.error(f"URL scraping failed: {e}")
+        raise ValueError(f"URL scraping failed: {str(e)}")
 
+def extract_product_name(soup: BeautifulSoup, url: str) -> str:
+    # Try common selectors
+    selectors = ['h1.product-title', 'h1.product-name', 'h1[itemprop="name"]', 'h1']
+    for selector in selectors:
+        elem = soup.select_one(selector)
+        if elem:
+            return elem.get_text(strip=True)
+    return url.split('/')[-1].replace('-', ' ').title()
 
-def is_valid_url(url: str) -> bool:
-    """
-    Validate URL format
-    Args:
-        url: URL to validate
-    Returns:
-        True if URL is valid
-    """
-    try:
-        result = urlparse(url)
-        return all([result.scheme, result.netloc])
-    except Exception:
-        return False
+def extract_brand(soup: BeautifulSoup) -> str:
+    selectors = ['.product-brand', '[itemprop="brand"]', '.brand']
+    for selector in selectors:
+        elem = soup.select_one(selector)
+        if elem:
+            return elem.get_text(strip=True)
+    return ""
+
+def extract_sku(soup: BeautifulSoup) -> str:
+    selectors = ['.product-sku', '[itemprop="sku"]', '.sku']
+    for selector in selectors:
+        elem = soup.select_one(selector)
+        if elem:
+            return elem.get_text(strip=True)
+    return ""
+
+def extract_short_description(soup: BeautifulSoup) -> str:
+    selectors = ['.short-description', '.product-intro', '[itemprop="description"]']
+    for selector in selectors:
+        elem = soup.select_one(selector)
+        if elem:
+            text = elem.get_text(strip=True)
+            return text[:200]
+    return ""
+
+def extract_meta_description(soup: BeautifulSoup) -> str:
+    meta = soup.find('meta', attrs={'name': 'description'})
+    if meta and meta.get('content'):
+        return meta['content'][:160]
+    return extract_short_description(soup)[:160]
+
+def extract_long_description(soup: BeautifulSoup) -> str:
+    selectors = ['.product-description', '.description', '[itemprop="description"]']
+    for selector in selectors:
+        elem = soup.select_one(selector)
+        if elem:
+            return elem.get_text(strip=True)
+    return ""
+
+def extract_features(soup: BeautifulSoup) -> List[str]:
+    features = []
+    feature_lists = soup.select('.features li, .product-features li')
+    for li in feature_lists[:10]:
+        text = li.get_text(strip=True)
+        if text:
+            features.append(text)
+    return features
+
+def extract_specifications(soup: BeautifulSoup) -> Dict[str, Any]:
+    specs = {}
+    spec_tables = soup.select('.specifications table, .specs table')
+    for table in spec_tables:
+        rows = table.select('tr')
+        for row in rows:
+            cells = row.select('td, th')
+            if len(cells) == 2:
+                key = cells[0].get_text(strip=True)
+                value = cells[1].get_text(strip=True)
+                specs[key] = value
+    return specs
 
 
 def extract_product_from_html(soup: BeautifulSoup, url: str, category: str) -> Dict[str, Any]:
