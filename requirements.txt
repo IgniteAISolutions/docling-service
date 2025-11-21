@@ -6,6 +6,9 @@ python-multipart==0.0.6
 # OpenAI
 openai==1.10.0
 
+# URL scraping
+cloudscraper==1.2.71
+
 # HTTP client
 httpx==0.26.0
 
