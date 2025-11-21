@@ -1,382 +1,612 @@
 """
-URL Scraper Service
-Scrape product information from URLs
+URL Scraper Service with Cloudflare bypass
+Comprehensive product data extraction for e-commerce
 """
 import logging
-from typing import List, Dict, Any
-import httpx
+import re
+from typing import List, Dict, Any, Optional
+import cloudscraper
 from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
-# Browser-like headers to avoid 403 errors
-HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-    'Accept-Language': 'en-GB,en;q=0.9',
-    'Accept-Encoding': 'gzip, deflate, br',
-    'Connection': 'keep-alive',
-    'Upgrade-Insecure-Requests': '1',
-    'Sec-Fetch-Dest': 'document',
-    'Sec-Fetch-Mode': 'navigate',
-    'Sec-Fetch-Site': 'none',
-}
+def scrape_sync(url: str) -> str:
+    """Synchronous scrape using cloudscraper"""
+    scraper = cloudscraper.create_scraper(
+        browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False}
+    )
+    response = scraper.get(url, timeout=30)
+    response.raise_for_status()
+    return response.text
 
 async def scrape(url: str, category: str) -> List[Dict[str, Any]]:
-    """
-    Scrape product data from URL
-    """
+    """Scrape comprehensive product data from URL"""
     try:
         logger.info(f"Scraping URL: {url}")
         
-        async with httpx.AsyncClient(
-            timeout=30.0,
-            headers=HEADERS,
-            follow_redirects=True
-        ) as client:
-            response = await client.get(url)
-            response.raise_for_status()
+        import asyncio
+        html = await asyncio.to_thread(scrape_sync, url)
         
-        soup = BeautifulSoup(response.text, 'html.parser')
+        soup = BeautifulSoup(html, 'html.parser')
+        full_text = soup.get_text(separator=' ', strip=True)
         
-        # Extract product info
         product = {
+            # Core identifiers
             "name": extract_product_name(soup, url),
-            "brand": extract_brand(soup),
-            "sku": extract_sku(soup),
+            "brand": extract_brand(soup, full_text),
+            "sku": extract_sku(soup, full_text),
+            "ean": extract_ean(soup, full_text),
+            "barcode": extract_barcode(soup, full_text),
+            "mpn": extract_mpn(soup, full_text),  # Manufacturer Part Number
             "category": category,
+            
+            # Descriptions for brand_voice.py
             "descriptions": {
                 "shortDescription": extract_short_description(soup),
                 "metaDescription": extract_meta_description(soup),
                 "longDescription": extract_long_description(soup)
             },
+            
+            # Features and benefits
             "features": extract_features(soup),
-            "specifications": extract_specifications(soup)
+            "benefits": extract_benefits(soup, full_text),
+            
+            # Technical specifications
+            "specifications": extract_specifications(soup, full_text),
+            
+            # Variants and options
+            "variants": extract_variants(soup),
+            "colours": extract_colours(soup, full_text),
+            "sizes": extract_sizes(soup, full_text),
+            "styles": extract_styles(soup, full_text),
+            
+            # Pricing
+            "pricing": extract_pricing(soup, full_text),
+            
+            # Additional e-commerce data
+            "warranty": extract_warranty(soup, full_text),
+            "delivery": extract_delivery(soup, full_text),
+            "images": extract_images(soup),
+            
+            # Raw content for brand_voice.py context
+            "rawExtractedContent": full_text[:5000],
+            "_source_url": url
         }
         
         return [product]
         
-    except httpx.HTTPStatusError as e:
-        if e.response.status_code == 403:
-            raise ValueError(f"Access denied by website. The site {url} is blocking automated requests. Please try copying the product information manually.")
-        raise ValueError(f"Failed to fetch URL: {e.response.status_code}")
     except Exception as e:
         logger.error(f"URL scraping failed: {e}")
+        if "403" in str(e) or "Cloudflare" in str(e) or "blocked" in str(e).lower():
+            raise ValueError("This website has strong bot protection. Please copy the product details and use the Free Text tab.")
         raise ValueError(f"URL scraping failed: {str(e)}")
 
+
+# =============================================================================
+# CORE IDENTIFIERS
+# =============================================================================
+
 def extract_product_name(soup: BeautifulSoup, url: str) -> str:
-    # Try common selectors
-    selectors = ['h1.product-title', 'h1.product-name', 'h1[itemprop="name"]', 'h1']
+    """Extract product name/title"""
+    # Priority order of selectors
+    selectors = [
+        'h1.product-title', 'h1.product_title', 'h1.product-name',
+        'h1[itemprop="name"]', '.product-title h1', '.product_title',
+        '[data-testid="product-title"]', '.pdp-title', 'h1'
+    ]
     for selector in selectors:
         elem = soup.select_one(selector)
         if elem:
-            return elem.get_text(strip=True)
-    return url.split('/')[-1].replace('-', ' ').title()
+            name = elem.get_text(strip=True)
+            if name and len(name) > 2:
+                return name
+    
+    # Try og:title
+    og = soup.find('meta', property='og:title')
+    if og and og.get('content'):
+        return og['content'].strip()
+    
+    # Fallback to URL
+    return url.split('/')[-1].replace('-', ' ').replace('_', ' ').title()
 
-def extract_brand(soup: BeautifulSoup) -> str:
-    selectors = ['.product-brand', '[itemprop="brand"]', '.brand']
+def extract_brand(soup: BeautifulSoup, full_text: str) -> str:
+    """Extract brand name"""
+    # Schema.org
+    brand_elem = soup.find(attrs={'itemprop': 'brand'})
+    if brand_elem:
+        name_elem = brand_elem.find(attrs={'itemprop': 'name'})
+        if name_elem:
+            return name_elem.get_text(strip=True)
+        return brand_elem.get_text(strip=True)[:50]
+    
+    # Meta tags
+    for prop in ['og:brand', 'product:brand']:
+        meta = soup.find('meta', property=prop)
+        if meta and meta.get('content'):
+            return meta['content'].strip()
+    
+    # Common selectors
+    selectors = ['.product-brand', '.brand', '.manufacturer', '[data-brand]']
     for selector in selectors:
         elem = soup.select_one(selector)
         if elem:
-            return elem.get_text(strip=True)
+            return elem.get_text(strip=True)[:50]
+    
+    # Text pattern
+    match = re.search(r'Brand:\s*([A-Za-z0-9\s&]+)', full_text)
+    if match:
+        return match.group(1).strip()[:50]
+    
     return ""
 
-def extract_sku(soup: BeautifulSoup) -> str:
-    selectors = ['.product-sku', '[itemprop="sku"]', '.sku']
-    for selector in selectors:
-        elem = soup.select_one(selector)
-        if elem:
-            return elem.get_text(strip=True)
-    return ""
-
-def extract_short_description(soup: BeautifulSoup) -> str:
-    selectors = ['.short-description', '.product-intro', '[itemprop="description"]']
+def extract_sku(soup: BeautifulSoup, full_text: str) -> str:
+    """Extract SKU code"""
+    # Schema.org
+    meta = soup.find('meta', attrs={'itemprop': 'sku'})
+    if meta and meta.get('content'):
+        return meta['content'].strip()
+    
+    elem = soup.find(attrs={'itemprop': 'sku'})
+    if elem:
+        return elem.get_text(strip=True)
+    
+    # Selectors
+    selectors = ['.sku', '.product-sku', '[data-sku]', '.product_meta .sku']
     for selector in selectors:
         elem = soup.select_one(selector)
         if elem:
             text = elem.get_text(strip=True)
-            return text[:200]
+            # Clean up "SKU: ABC123" format
+            match = re.search(r'([A-Z0-9][-A-Z0-9]+)', text)
+            if match:
+                return match.group(1)
+    
+    # Text patterns
+    patterns = [
+        r'SKU[:\s]+([A-Z0-9][-A-Z0-9]+)',
+        r'Product Code[:\s]+([A-Z0-9][-A-Z0-9]+)',
+        r'Item Code[:\s]+([A-Z0-9][-A-Z0-9]+)',
+        r'Article[:\s]+([A-Z0-9][-A-Z0-9]+)',
+        r'Model[:\s]+([A-Z0-9][-A-Z0-9]+)',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, full_text, re.IGNORECASE)
+        if match:
+            return match.group(1)
+    
     return ""
 
-def extract_meta_description(soup: BeautifulSoup) -> str:
-    meta = soup.find('meta', attrs={'name': 'description'})
-    if meta and meta.get('content'):
-        return meta['content'][:160]
-    return extract_short_description(soup)[:160]
+def extract_ean(soup: BeautifulSoup, full_text: str) -> str:
+    """Extract EAN/GTIN code"""
+    # Schema.org GTIN
+    for prop in ['gtin13', 'gtin', 'gtin14', 'gtin12']:
+        meta = soup.find('meta', attrs={'itemprop': prop})
+        if meta and meta.get('content'):
+            return meta['content'].strip()
+        elem = soup.find(attrs={'itemprop': prop})
+        if elem:
+            return elem.get_text(strip=True)
+    
+    # Text patterns
+    patterns = [
+        r'EAN[:\s]+(\d{13})',
+        r'GTIN[:\s]+(\d{13,14})',
+        r'EAN-13[:\s]+(\d{13})',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, full_text, re.IGNORECASE)
+        if match:
+            return match.group(1)
+    
+    # Look for standalone 13-digit numbers (likely EAN)
+    matches = re.findall(r'\b(\d{13})\b', full_text)
+    for m in matches:
+        if m.startswith(('0', '1', '2', '3', '4', '5', '6', '7', '8', '9')):
+            return m
+    
+    return ""
 
-def extract_long_description(soup: BeautifulSoup) -> str:
-    selectors = ['.product-description', '.description', '[itemprop="description"]']
+def extract_barcode(soup: BeautifulSoup, full_text: str) -> str:
+    """Extract barcode (UPC/EAN)"""
+    # Try EAN first
+    ean = extract_ean(soup, full_text)
+    if ean:
+        return ean
+    
+    # UPC (12 digits)
+    patterns = [
+        r'UPC[:\s]+(\d{12})',
+        r'Barcode[:\s]+(\d{8,14})',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, full_text, re.IGNORECASE)
+        if match:
+            return match.group(1)
+    
+    return ""
+
+def extract_mpn(soup: BeautifulSoup, full_text: str) -> str:
+    """Extract Manufacturer Part Number"""
+    meta = soup.find('meta', attrs={'itemprop': 'mpn'})
+    if meta and meta.get('content'):
+        return meta['content'].strip()
+    
+    match = re.search(r'MPN[:\s]+([A-Z0-9][-A-Z0-9]+)', full_text, re.IGNORECASE)
+    if match:
+        return match.group(1)
+    
+    return ""
+
+
+# =============================================================================
+# DESCRIPTIONS
+# =============================================================================
+
+def extract_short_description(soup: BeautifulSoup) -> str:
+    """Extract short/intro description"""
+    selectors = [
+        '.woocommerce-product-details__short-description',
+        '.short-description', '.product-intro', '.product-summary',
+        '[itemprop="description"]', '.product-short-desc'
+    ]
     for selector in selectors:
         elem = soup.select_one(selector)
         if elem:
-            return elem.get_text(strip=True)
+            text = elem.get_text(strip=True)
+            if text:
+                return text[:500]
     return ""
+
+def extract_meta_description(soup: BeautifulSoup) -> str:
+    """Extract meta description"""
+    meta = soup.find('meta', attrs={'name': 'description'})
+    if meta and meta.get('content'):
+        return meta['content'][:160]
+    
+    og = soup.find('meta', property='og:description')
+    if og and og.get('content'):
+        return og['content'][:160]
+    
+    return extract_short_description(soup)[:160]
+
+def extract_long_description(soup: BeautifulSoup) -> str:
+    """Extract full product description"""
+    selectors = [
+        '.woocommerce-Tabs-panel--description', '#tab-description',
+        '.product-description', '.description-content', '.product-details',
+        '[data-testid="product-description"]', '.pdp-description'
+    ]
+    for selector in selectors:
+        elem = soup.select_one(selector)
+        if elem:
+            text = elem.get_text(strip=True)
+            if text and len(text) > 50:
+                return text[:3000]
+    
+    # Try article or main content
+    for tag in ['article', 'main']:
+        elem = soup.find(tag)
+        if elem:
+            text = elem.get_text(strip=True)
+            if len(text) > 200:
+                return text[:3000]
+    
+    return ""
+
+
+# =============================================================================
+# FEATURES AND BENEFITS
+# =============================================================================
 
 def extract_features(soup: BeautifulSoup) -> List[str]:
+    """Extract product features"""
     features = []
-    feature_lists = soup.select('.features li, .product-features li')
-    for li in feature_lists[:10]:
-        text = li.get_text(strip=True)
-        if text:
-            features.append(text)
-    return features
-
-def extract_specifications(soup: BeautifulSoup) -> Dict[str, Any]:
-    specs = {}
-    spec_tables = soup.select('.specifications table, .specs table')
-    for table in spec_tables:
-        rows = table.select('tr')
-        for row in rows:
-            cells = row.select('td, th')
-            if len(cells) == 2:
-                key = cells[0].get_text(strip=True)
-                value = cells[1].get_text(strip=True)
-                specs[key] = value
-    return specs
-
-
-def extract_product_from_html(soup: BeautifulSoup, url: str, category: str) -> Dict[str, Any]:
-    """
-    Extract product data from HTML soup
-    Args:
-        soup: BeautifulSoup object
-        url: Source URL
-        category: Product category
-    Returns:
-        Product dictionary
-    """
-    product = {
-        "name": extract_product_name_from_html(soup),
-        "category": category,
-        "sku": extract_sku_from_html(soup),
-        "barcode": extract_barcode_from_html(soup),
-        "brand": extract_brand_from_html(soup),
-        "features": extract_features_from_html(soup),
-        "specifications": extract_specifications_from_html(soup),
-        "_source_url": url
-    }
-
-    return product
-
-
-def extract_product_name_from_html(soup: BeautifulSoup) -> str:
-    """Extract product name from HTML"""
-
-    # Try Open Graph meta tag
-    og_title = soup.find('meta', property='og:title')
-    if og_title and og_title.get('content'):
-        return og_title['content'].strip()
-
-    # Try meta title
-    title_tag = soup.find('title')
-    if title_tag and title_tag.string:
-        # Clean up title (remove site name, etc.)
-        title = title_tag.string.strip()
-        # Remove common separators and site names
-        title = re.split(r'\s*[|\-–—]\s*', title)[0]
-        return title.strip()
-
-    # Try h1 tag
-    h1 = soup.find('h1')
-    if h1:
-        return h1.get_text().strip()
-
-    # Try product name patterns
-    name_selectors = [
-        {'class': re.compile(r'product[_-]?name', re.I)},
-        {'class': re.compile(r'product[_-]?title', re.I)},
-        {'itemprop': 'name'},
+    
+    # Common feature list selectors
+    selectors = [
+        '.features li', '.product-features li', '.feature-list li',
+        '.woocommerce-product-details__short-description li',
+        'ul.product-bullets li', '.key-features li', '.highlights li'
     ]
-
-    for selector in name_selectors:
-        element = soup.find(attrs=selector)
-        if element:
-            return element.get_text().strip()
-
-    return ""
-
-
-def extract_sku_from_html(soup: BeautifulSoup) -> str:
-    """Extract SKU from HTML"""
-
-    # Try meta tags
-    sku_meta = soup.find('meta', attrs={'itemprop': 'sku'})
-    if sku_meta and sku_meta.get('content'):
-        return sku_meta['content'].strip()
-
-    # Try text patterns
-    patterns = [
-        r'SKU:\s*([A-Z0-9-]+)',
-        r'Product Code:\s*([A-Z0-9-]+)',
-        r'Item Code:\s*([A-Z0-9-]+)',
-    ]
-
-    text = soup.get_text()
-    for pattern in patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            return match.group(1).strip()
-
-    # Try class/id patterns
-    sku_selectors = [
-        {'class': re.compile(r'sku', re.I)},
-        {'id': re.compile(r'sku', re.I)},
-    ]
-
-    for selector in sku_selectors:
-        element = soup.find(attrs=selector)
-        if element:
-            text = element.get_text().strip()
-            # Extract alphanumeric code
-            match = re.search(r'([A-Z0-9-]+)', text)
-            if match:
-                return match.group(1)
-
-    return ""
-
-
-def extract_barcode_from_html(soup: BeautifulSoup) -> str:
-    """Extract barcode/EAN from HTML"""
-
-    # Try meta tags
-    gtin_meta = soup.find('meta', attrs={'itemprop': 'gtin13'})
-    if gtin_meta and gtin_meta.get('content'):
-        return gtin_meta['content'].strip()
-
-    # Try text patterns
-    patterns = [
-        r'EAN:\s*(\d{13})',
-        r'Barcode:\s*(\d{8,14})',
-        r'UPC:\s*(\d{12})',
-        r'GTIN:\s*(\d{8,14})',
-    ]
-
-    text = soup.get_text()
-    for pattern in patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            return match.group(1).strip()
-
-    return ""
-
-
-def extract_brand_from_html(soup: BeautifulSoup) -> str:
-    """Extract brand from HTML"""
-
-    # Try meta tags
-    brand_meta = soup.find('meta', attrs={'itemprop': 'brand'})
-    if brand_meta and brand_meta.get('content'):
-        return brand_meta['content'].strip()
-
-    og_brand = soup.find('meta', property='og:brand')
-    if og_brand and og_brand.get('content'):
-        return og_brand['content'].strip()
-
-    # Try class/id patterns
-    brand_selectors = [
-        {'class': re.compile(r'brand', re.I)},
-        {'itemprop': 'brand'},
-    ]
-
-    for selector in brand_selectors:
-        element = soup.find(attrs=selector)
-        if element:
-            # Check for nested name tag
-            name_tag = element.find(attrs={'itemprop': 'name'})
-            if name_tag:
-                return name_tag.get_text().strip()
-            return element.get_text().strip()
-
-    return ""
-
-
-def extract_features_from_html(soup: BeautifulSoup) -> List[str]:
-    """Extract features from HTML"""
-    features = []
-
-    # Look for feature lists
-    feature_selectors = [
-        {'class': re.compile(r'features?', re.I)},
-        {'id': re.compile(r'features?', re.I)},
-    ]
-
-    for selector in feature_selectors:
-        container = soup.find(attrs=selector)
-        if container:
-            # Find list items
-            items = container.find_all(['li', 'p'])
-            for item in items:
-                text = item.get_text().strip()
-                if text and len(text) > 5:
-                    features.append(text)
-
-    # Look for bullet points with feature indicators
-    all_li = soup.find_all('li')
-    for li in all_li:
-        text = li.get_text().strip()
-        # Check if it looks like a feature
-        if any(word in text.lower() for word in ['feature', 'include', 'with']):
-            if text not in features and len(text) > 5:
+    
+    for selector in selectors:
+        items = soup.select(selector)
+        for item in items[:15]:
+            text = item.get_text(strip=True)
+            if text and len(text) > 5 and text not in features:
                 features.append(text)
+    
+    # Look for feature sections
+    feature_headers = soup.find_all(['h2', 'h3', 'h4'], string=re.compile(r'features?|highlights?|key points?', re.I))
+    for header in feature_headers:
+        next_elem = header.find_next(['ul', 'ol'])
+        if next_elem:
+            for li in next_elem.find_all('li')[:10]:
+                text = li.get_text(strip=True)
+                if text and len(text) > 5 and text not in features:
+                    features.append(text)
+    
+    return features[:15]
 
-    # Deduplicate and limit
-    return features[:10]
+def extract_benefits(soup: BeautifulSoup, full_text: str) -> List[str]:
+    """Extract product benefits"""
+    benefits = []
+    
+    # Look for benefits sections
+    benefit_headers = soup.find_all(['h2', 'h3', 'h4'], string=re.compile(r'benefits?|why choose|advantages?', re.I))
+    for header in benefit_headers:
+        next_elem = header.find_next(['ul', 'ol', 'p'])
+        if next_elem:
+            if next_elem.name in ['ul', 'ol']:
+                for li in next_elem.find_all('li')[:10]:
+                    text = li.get_text(strip=True)
+                    if text and len(text) > 5:
+                        benefits.append(text)
+            else:
+                text = next_elem.get_text(strip=True)
+                if text:
+                    benefits.append(text)
+    
+    return benefits[:10]
 
 
-def extract_specifications_from_html(soup: BeautifulSoup) -> Dict[str, Any]:
-    """Extract specifications from HTML"""
+# =============================================================================
+# SPECIFICATIONS
+# =============================================================================
+
+def extract_specifications(soup: BeautifulSoup, full_text: str) -> Dict[str, Any]:
+    """Extract comprehensive technical specifications"""
     specs = {}
-
-    # Look for specification tables
-    spec_tables = soup.find_all('table', attrs={'class': re.compile(r'spec', re.I)})
-
-    for table in spec_tables:
-        rows = table.find_all('tr')
-        for row in rows:
-            cells = row.find_all(['th', 'td'])
-            if len(cells) >= 2:
-                key = cells[0].get_text().strip().lower()
-                value = cells[1].get_text().strip()
-
-                # Map to standard spec keys
-                if 'material' in key:
-                    specs['material'] = value
-                elif 'dimension' in key or 'size' in key:
-                    specs['dimensions'] = value
-                elif 'weight' in key:
-                    specs['weight'] = value
-                elif 'capacity' in key or 'volume' in key:
-                    specs['capacity'] = value
-                elif 'power' in key or 'watt' in key:
-                    specs['powerW'] = value
-                elif 'origin' in key or 'made in' in key:
-                    specs['origin'] = value
-                elif 'guarantee' in key or 'warranty' in key:
-                    specs['guarantee'] = value
-                elif 'care' in key or 'cleaning' in key:
-                    specs['care'] = value
-
-    # Look for specification lists
-    spec_selectors = [
-        {'class': re.compile(r'spec', re.I)},
-        {'id': re.compile(r'spec', re.I)},
+    
+    # Specification tables
+    table_selectors = [
+        '.woocommerce-product-attributes', 'table.shop_attributes',
+        '.specifications table', '.specs table', '.product-specs table',
+        '[data-testid="specifications"]', '.tech-specs table'
     ]
-
-    for selector in spec_selectors:
-        container = soup.find(attrs=selector)
-        if container:
-            # Try to find key-value pairs
-            dt_dd = container.find_all(['dt', 'dd'])
-            for i in range(0, len(dt_dd) - 1, 2):
-                if dt_dd[i].name == 'dt' and i + 1 < len(dt_dd):
-                    key = dt_dd[i].get_text().strip().lower()
-                    value = dt_dd[i + 1].get_text().strip()
-
-                    if 'material' in key:
-                        specs['material'] = value
-                    elif 'dimension' in key or 'size' in key:
-                        specs['dimensions'] = value
-                    elif 'weight' in key:
-                        specs['weight'] = value
-
+    
+    for selector in table_selectors:
+        tables = soup.select(selector)
+        for table in tables:
+            rows = table.select('tr')
+            for row in rows:
+                cells = row.select('td, th')
+                if len(cells) >= 2:
+                    key = cells[0].get_text(strip=True).lower()
+                    value = cells[1].get_text(strip=True)
+                    if key and value:
+                        specs[key] = value
+    
+    # Definition lists
+    for dl in soup.select('dl.specifications, dl.product-specs'):
+        dts = dl.find_all('dt')
+        dds = dl.find_all('dd')
+        for dt, dd in zip(dts, dds):
+            key = dt.get_text(strip=True).lower()
+            value = dd.get_text(strip=True)
+            if key and value:
+                specs[key] = value
+    
+    # Extract common specs from text
+    spec_patterns = {
+        'dimensions': r'Dimensions?[:\s]+([0-9]+\s*[xX×]\s*[0-9]+(?:\s*[xX×]\s*[0-9]+)?(?:\s*(?:mm|cm|m|in|inches))?)',
+        'weight': r'Weight[:\s]+([0-9.]+\s*(?:kg|g|lb|lbs|oz))',
+        'power': r'Power[:\s]+([0-9]+\s*[Ww])',
+        'wattage': r'Wattage[:\s]+([0-9]+\s*[Ww])',
+        'voltage': r'Voltage[:\s]+([0-9]+\s*[Vv])',
+        'capacity': r'Capacity[:\s]+([0-9.]+\s*(?:L|ml|litres?|liters?|cups?))',
+        'material': r'Material[:\s]+([A-Za-z\s,]+)',
+    }
+    
+    for spec_key, pattern in spec_patterns.items():
+        if spec_key not in specs:
+            match = re.search(pattern, full_text, re.IGNORECASE)
+            if match:
+                specs[spec_key] = match.group(1).strip()
+    
     return specs
+
+
+# =============================================================================
+# VARIANTS AND OPTIONS
+# =============================================================================
+
+def extract_variants(soup: BeautifulSoup) -> List[Dict[str, str]]:
+    """Extract product variants"""
+    variants = []
+    
+    # Look for variant selectors
+    selectors = soup.select('select.variation, select[name*="attribute"], .variant-selector select')
+    for select in selectors:
+        variant_name = select.get('name', '').replace('attribute_', '').replace('_', ' ')
+        options = []
+        for option in select.find_all('option'):
+            value = option.get_text(strip=True)
+            if value and value.lower() not in ['choose an option', 'select', '']:
+                options.append(value)
+        if options:
+            variants.append({'name': variant_name, 'options': options})
+    
+    # Look for swatch options
+    swatches = soup.select('.swatch-wrapper, .variant-swatch, [data-variant]')
+    for swatch in swatches:
+        value = swatch.get('data-value') or swatch.get('title') or swatch.get_text(strip=True)
+        if value:
+            variants.append({'type': 'swatch', 'value': value})
+    
+    return variants[:20]
+
+def extract_colours(soup: BeautifulSoup, full_text: str) -> List[str]:
+    """Extract available colours"""
+    colours = []
+    
+    # Common colour words
+    colour_words = [
+        'black', 'white', 'silver', 'grey', 'gray', 'red', 'blue', 'green',
+        'gold', 'rose gold', 'bronze', 'copper', 'cream', 'beige', 'brown',
+        'navy', 'pink', 'purple', 'orange', 'yellow', 'stainless steel',
+        'brushed steel', 'chrome', 'matte black', 'gloss white'
+    ]
+    
+    # Look for colour selectors
+    colour_selects = soup.select('select[name*="color"], select[name*="colour"], .colour-selector select')
+    for select in colour_selects:
+        for option in select.find_all('option'):
+            text = option.get_text(strip=True).lower()
+            if text and text not in ['choose', 'select', '']:
+                colours.append(option.get_text(strip=True))
+    
+    # Check text for colour mentions
+    if not colours:
+        text_lower = full_text.lower()
+        for colour in colour_words:
+            if colour in text_lower:
+                colours.append(colour.title())
+    
+    return list(set(colours))[:10]
+
+def extract_sizes(soup: BeautifulSoup, full_text: str) -> List[str]:
+    """Extract available sizes"""
+    sizes = []
+    
+    # Size selectors
+    size_selects = soup.select('select[name*="size"], .size-selector select')
+    for select in size_selects:
+        for option in select.find_all('option'):
+            text = option.get_text(strip=True)
+            if text and text.lower() not in ['choose', 'select', '']:
+                sizes.append(text)
+    
+    # Text patterns
+    size_pattern = r'Sizes?[:\s]+([A-Za-z0-9,\s]+(?:cm|mm|L|ml|inch)?)'
+    match = re.search(size_pattern, full_text, re.IGNORECASE)
+    if match:
+        sizes.extend([s.strip() for s in match.group(1).split(',')])
+    
+    return list(set(sizes))[:10]
+
+def extract_styles(soup: BeautifulSoup, full_text: str) -> List[str]:
+    """Extract available styles"""
+    styles = []
+    
+    style_selects = soup.select('select[name*="style"], .style-selector select')
+    for select in style_selects:
+        for option in select.find_all('option'):
+            text = option.get_text(strip=True)
+            if text and text.lower() not in ['choose', 'select', '']:
+                styles.append(text)
+    
+    return styles[:10]
+
+
+# =============================================================================
+# PRICING
+# =============================================================================
+
+def extract_pricing(soup: BeautifulSoup, full_text: str) -> Dict[str, Any]:
+    """Extract pricing information"""
+    pricing = {}
+    
+    # Schema.org price
+    price_elem = soup.find(attrs={'itemprop': 'price'})
+    if price_elem:
+        pricing['price'] = price_elem.get('content') or price_elem.get_text(strip=True)
+    
+    currency_elem = soup.find(attrs={'itemprop': 'priceCurrency'})
+    if currency_elem:
+        pricing['currency'] = currency_elem.get('content') or currency_elem.get_text(strip=True)
+    
+    # Common price selectors
+    price_selectors = ['.price', '.product-price', '[data-price]', '.current-price', '.sale-price']
+    for selector in price_selectors:
+        elem = soup.select_one(selector)
+        if elem and 'price' not in pricing:
+            text = elem.get_text(strip=True)
+            # Extract price with currency
+            match = re.search(r'[£$€][\d,]+\.?\d*', text)
+            if match:
+                pricing['price'] = match.group(0)
+    
+    # RRP/Was price
+    rrp_selectors = ['.was-price', '.rrp', '.original-price', '.regular-price']
+    for selector in rrp_selectors:
+        elem = soup.select_one(selector)
+        if elem:
+            text = elem.get_text(strip=True)
+            match = re.search(r'[£$€][\d,]+\.?\d*', text)
+            if match:
+                pricing['rrp'] = match.group(0)
+    
+    return pricing
+
+
+# =============================================================================
+# ADDITIONAL E-COMMERCE DATA
+# =============================================================================
+
+def extract_warranty(soup: BeautifulSoup, full_text: str) -> str:
+    """Extract warranty information"""
+    # Look for warranty sections
+    warranty_patterns = [
+        r'(\d+\s*years?\s*(?:warranty|guarantee))',
+        r'(warranty[:\s]+\d+\s*years?)',
+        r'(guarantee[:\s]+\d+\s*years?)',
+        r'(\d+\s*years?\s*manufacturer.s?\s*warranty)',
+    ]
+    
+    for pattern in warranty_patterns:
+        match = re.search(pattern, full_text, re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+    
+    # Check for warranty in specs tables
+    for elem in soup.select('td, th, dt, dd'):
+        text = elem.get_text(strip=True).lower()
+        if 'warranty' in text or 'guarantee' in text:
+            return elem.get_text(strip=True)
+    
+    return ""
+
+def extract_delivery(soup: BeautifulSoup, full_text: str) -> str:
+    """Extract delivery information"""
+    delivery_selectors = ['.delivery-info', '.shipping-info', '[data-delivery]']
+    for selector in delivery_selectors:
+        elem = soup.select_one(selector)
+        if elem:
+            return elem.get_text(strip=True)[:200]
+    
+    # Text patterns
+    delivery_patterns = [
+        r'(free delivery[^.]*)',
+        r'(delivery[:\s]+[^.]+)',
+        r'(ships? in[^.]+)',
+    ]
+    for pattern in delivery_patterns:
+        match = re.search(pattern, full_text, re.IGNORECASE)
+        if match:
+            return match.group(1).strip()[:200]
+    
+    return ""
+
+def extract_images(soup: BeautifulSoup) -> List[str]:
+    """Extract product image URLs"""
+    images = []
+    
+    # Product gallery images
+    gallery_selectors = [
+        '.product-gallery img', '.woocommerce-product-gallery img',
+        '[data-product-image]', '.product-images img', '.pdp-image img'
+    ]
+    
+    for selector in gallery_selectors:
+        for img in soup.select(selector)[:10]:
+            src = img.get('src') or img.get('data-src') or img.get('data-lazy-src')
+            if src and src not in images and not src.endswith('.svg'):
+                images.append(src)
+    
+    # og:image
+    og_img = soup.find('meta', property='og:image')
+    if og_img and og_img.get('content'):
+        images.insert(0, og_img['content'])
+    
+    return images[:10]
