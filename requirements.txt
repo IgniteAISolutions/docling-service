@@ -8,6 +8,7 @@ openai==1.10.0
 
 # URL scraping
 cloudscraper==1.2.71
+playwright==1.40.0
 
 # HTTP client
 httpx==0.26.0
