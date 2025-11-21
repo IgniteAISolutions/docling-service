@@ -597,25 +597,7 @@ const UniversalUploader: React.FC = () => {
     )}
   </>
 )}
-
-     {!isFileTab && activeTab !== 'manual-codes' && (
-  <>
-    <textarea 
-      value={textInput} 
-      onChange={(e) => setTextInput(e.target.value)} 
-      placeholder={activeTab === 'website-url' ? 'Enter product URL\nExample: http://example.com/product/12345' : 'Enter product description or details...'} 
-      rows={8} 
-      style={{ ...INPUT_BASE, resize: 'vertical' }} 
-    />
-    {activeTab === 'website-url' && (
-      <p style={{ fontSize: '0.85rem', color: '#e67e22', marginTop: '0.5rem', lineHeight: '1.4' }}>
-        ⚠️ <strong>Note:</strong> Some websites block automated scraping for security. 
-        If scraping fails, please use the <strong>Free Text</strong> tab to paste product details manually.
-      </p>
-    )}
-  </>
-)}
-          </div>
+           </div>
 
           <button onClick={handleProcess} disabled={!canProcess} style={{ marginTop: '1.5rem', padding: '12px 32px', border: 'none', borderRadius: '6px', background: canProcess ? '#27ae60' : '#bdc3c7', color: '#fff', cursor: canProcess ? 'pointer' : 'not-allowed', fontSize: '1rem', fontWeight: 600, transition: 'all 0.2s ease' }}>
             Process
